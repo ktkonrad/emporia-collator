@@ -11,3 +11,6 @@ wheels/
 
 # User credentials
 config.cfg
+
+# output data
+emporia_data

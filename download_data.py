@@ -3,6 +3,7 @@ import os
 import pandas as pd
 from datetime import datetime, date, timedelta
 from pyemvue import PyEmVue
+from pyemvue.enums import Scale
 import configparser
 
 def get_last_month_dates():
@@ -31,7 +32,16 @@ def download_emporia_data(email, password, output_folder='emporia_data'):
     print("Fetching devices...")
     try:
         devices = vue.get_devices()
-        print(f"Found {len(devices)} devices.")
+        device_gids = []
+        device_info = {}
+        for device in devices:
+            if not device.device_gid in device_gids:
+                device_gids.append(device.device_gid)
+                device_info[device.device_gid] = device
+            else:
+                # This logic is from the pyemvue README to handle devices with multiple channel sets.
+                device_info[device.device_gid].channels += device.channels
+        print(f"Found {len(device_info)} devices.")
     except Exception as e:
         print(f"Error getting devices: {e}")
         return
@@ -43,9 +53,9 @@ def download_emporia_data(email, password, output_folder='emporia_data'):
     start_date, end_date = get_last_month_dates()
     print(f"Downloading data from {start_date} to {end_date}.")
 
-    for device in devices:
-        device_name = device.device_name.replace(' ', '_').lower()
-        print(f"Fetching data for device: {device.device_name} (gid: {device.device_gid})")
+    for gid, device in device_info.items():
+        device_name = device.device_name.replace(' ', '_').replace('/', '_').lower()
+        print(f"Fetching data for device: {device.device_name} (gid: {gid})")
 
         try:
             channel_dfs = []
@@ -59,13 +69,14 @@ def download_emporia_data(email, password, output_folder='emporia_data'):
                 usage_data, start_time = vue.get_chart_usage(
                     channel=channel,
                     start=datetime.combine(start_date, datetime.min.time()),
-                    end=datetime.combine(end_date, datetime.max.time()),
-                    scale='1MIN'
+                    end=datetime.combine(end_date, datetime.max.time()).replace(second=0, microsecond=0), # Removed microseconds
+                    scale=Scale.HOUR.value # Changed to hourly scale
                 )
 
                 if usage_data:
                     # Create a DataFrame for the current channel
-                    timestamps = pd.to_datetime(start_time) + pd.to_timedelta(range(len(usage_data)), unit='m')
+                    # Timestamps should reflect the new hourly scale
+                    timestamps = pd.to_datetime(start_time) + pd.to_timedelta(range(len(usage_data)), unit='h')
                     df_channel = pd.DataFrame({
                         'instant': timestamps,
                         f'channel_{channel.channel_num}_usage': usage_data
