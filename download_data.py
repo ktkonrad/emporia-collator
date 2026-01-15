@@ -41,9 +41,10 @@ def authenticate(email: str, password: str) -> Optional[PyEmVue]:
         print("Please check your credentials and network connection.")
         return None
 
-def get_emporia_devices(vue: PyEmVue) -> Optional[Dict[int, Any]]:
+def get_emporia_device_info(vue: PyEmVue) -> Optional[Dict[int, Any]]:
     """
-    Fetches all devices and consolidates channels for devices with multiple channel sets.
+    Fetches all devices, populates their properties including electricity rate, 
+    and consolidates channels for devices with multiple channel sets.
 
     Args:
         vue (PyEmVue): The logged-in PyEmVue object.
@@ -56,6 +57,7 @@ def get_emporia_devices(vue: PyEmVue) -> Optional[Dict[int, Any]]:
         devices = vue.get_devices()
         device_info: Dict[int, Any] = {}
         for device in devices:
+            vue.populate_device_properties(device)
             if device.device_gid not in device_info:
                 device_info[device.device_gid] = device
             else:
@@ -66,37 +68,62 @@ def get_emporia_devices(vue: PyEmVue) -> Optional[Dict[int, Any]]:
         print(f"Error getting devices: {e}")
         return None
 
-def fetch_channel_data(vue: PyEmVue, channel: Any, start_date: date, end_date: date) -> Optional[pd.DataFrame]:
+def fetch_channel_data(vue: PyEmVue, device: Any, channel: Any, start_date: date, end_date: date, granularity: str) -> Optional[pd.DataFrame]:
     """
-    Fetches hourly usage data for a single channel.
+    Fetches usage data for a single channel with a specified granularity and calculates the cost.
 
     Args:
         vue (PyEmVue): The logged-in PyEmVue object.
+        device (Any): The device object, containing location information with electricity rate.
         channel (Any): The channel object to fetch data for.
         start_date (date): The start date for the data fetch.
         end_date (date): The end date for the data fetch.
+        granularity (str): The granularity of the data (e.g., 'DAY', 'HOUR', 'MINUTE').
 
     Returns:
-        Optional[pd.DataFrame]: A DataFrame with the channel's usage data, or None.
+        Optional[pd.DataFrame]: A DataFrame with the channel's usage data (in kWh) and cost (in USD), or None.
     """
     if ',' in str(channel.channel_num):
         print(f"  Skipping pseudo-channel: {channel.name} ({channel.channel_num})")
         return None
 
     print(f"  Fetching data for channel: {channel.name} ({channel.channel_num})")
+    
+    scale_map = {
+        'MINUTE': (Scale.MINUTE.value, 'm'),
+        'HOUR': (Scale.HOUR.value, 'h'),
+        'DAY': (Scale.DAY.value, 'd'),
+    }
+    
+    if granularity.upper() not in scale_map:
+        print(f"  Unsupported granularity: {granularity}")
+        return None
+        
+    scale_value, time_unit = scale_map[granularity.upper()]
+
     try:
         usage_data, start_time = vue.get_chart_usage(
             channel=channel,
             start=datetime.combine(start_date, datetime.min.time()),
             end=datetime.combine(end_date, datetime.max.time()).replace(second=0, microsecond=0),
-            scale=Scale.HOUR.value
+            scale=scale_value
         )
 
         if usage_data:
-            timestamps = pd.to_datetime(start_time) + pd.to_timedelta(range(len(usage_data)), unit='h')
+            # Filter out None values from usage_data
+            filtered_usage_data = [val for val in usage_data if val is not None]
+            if not filtered_usage_data:
+                print(f"  No valid usage data returned for channel {channel.name}")
+                return None
+
+            rate = device.usage_cent_per_kw_hour / 100 # Convert cents to dollars
+            timestamps = pd.to_datetime(start_time) + pd.to_timedelta(range(len(filtered_usage_data)), unit=time_unit)
+            usage_kwh = [val / 1000 for val in filtered_usage_data] # Assuming usage from API is in Wh, convert to kWh
+            cost = [val * rate for val in usage_kwh]
             return pd.DataFrame({
                 'instant': timestamps,
-                f'channel_{channel.channel_num}_usage': usage_data
+                f'channel_{channel.channel_num}_usage_kwh': usage_kwh,
+                f'channel_{channel.channel_num}_cost_usd': cost
             })
         else:
             print(f"  No data returned for channel {channel.name}")
@@ -105,7 +132,7 @@ def fetch_channel_data(vue: PyEmVue, channel: Any, start_date: date, end_date: d
         print(f"  Error fetching data for channel {channel.name}: {e}")
         return None
 
-def fetch_device_data(vue: PyEmVue, device: Any, start_date: date, end_date: date) -> Optional[pd.DataFrame]:
+def fetch_device_data(vue: PyEmVue, device: Any, start_date: date, end_date: date, granularity: str) -> Optional[pd.DataFrame]:
     """
     Fetches data for all channels in a device and merges them into a single DataFrame.
 
@@ -114,12 +141,13 @@ def fetch_device_data(vue: PyEmVue, device: Any, start_date: date, end_date: dat
         device (Any): The device to fetch data for.
         start_date (date): The start date for the data fetch.
         end_date (date): The end date for the data fetch.
+        granularity (str): The granularity of the data.
 
     Returns:
         Optional[pd.DataFrame]: A merged DataFrame of all channel data for the device.
     """
     print(f"Fetching data for device: {device.device_name} (gid: {device.device_gid})")
-    channel_dfs = [fetch_channel_data(vue, ch, start_date, end_date) for ch in device.channels]
+    channel_dfs = [fetch_channel_data(vue, device, ch, start_date, end_date, granularity) for ch in device.channels]
     channel_dfs = [df for df in channel_dfs if df is not None]
 
     if not channel_dfs:
@@ -135,7 +163,7 @@ def fetch_device_data(vue: PyEmVue, device: Any, start_date: date, end_date: dat
     df['device_name'] = device.device_name
     return df
 
-def save_all_data(df: pd.DataFrame, start_date: date, output_folder: str):
+def save_data(df: pd.DataFrame, start_date: date, output_folder: str):
     """
     Saves the combined DataFrame to a single CSV file.
 
@@ -150,77 +178,96 @@ def save_all_data(df: pd.DataFrame, start_date: date, output_folder: str):
 
     filename = f"{output_folder}/emporia_data_{start_date.strftime('%Y-%m')}.csv"
     df.to_csv(filename, index=False)
-    print(f"Successfully saved all device data to {filename}")
+    print(f"Successfully saved device data to {filename}")
 
-def download_emporia_data(email: str, password: str, output_folder: str = 'emporia_data'):
+def download_emporia_data(email: str, password: str, start_date: Optional[str], end_date: Optional[str], granularity: str, output_folder: str = 'emporia_data'):
     """
-    Orchestrates the download of Emporia data into a single CSV file.
+    Orchestrates the download of Emporia data with configurable granularity into a single CSV file.
 
     Args:
         email (str): The user's email address.
         password (str): The user's password.
+        start_date (Optional[str]): The start date for the data fetch.
+        end_date (Optional[str]): The end date for the data fetch.
+        granularity (str): The granularity of the data.
         output_folder (str, optional): The folder to save data. Defaults to 'emporia_data'.
     """
     vue = authenticate(email, password)
     if not vue:
         return
 
-    device_info = get_emporia_devices(vue)
+    device_info = get_emporia_device_info(vue)
     if not device_info:
         return
 
-    start_date, end_date = get_last_month_dates()
-    print(f"Downloading data from {start_date} to {end_date}.")
+    if start_date and end_date:
+        s_date = datetime.strptime(start_date, '%Y-%m-%d').date()
+        e_date = datetime.strptime(end_date, '%Y-%m-%d').date()
+        print(f"Downloading data from {s_date} to {e_date} with {granularity} granularity.")
+    else:
+        s_date, e_date = get_last_month_dates()
+        print(f"Downloading data from {s_date} to {e_date} with {granularity} granularity.")
 
     all_device_dfs: List[pd.DataFrame] = []
     for gid, device in device_info.items():
-        device_df = fetch_device_data(vue, device, start_date, end_date)
+        device_df = fetch_device_data(vue, device, s_date, e_date, granularity)
         if device_df is not None:
             all_device_dfs.append(device_df)
 
     if all_device_dfs:
         combined_df = pd.concat(all_device_dfs, ignore_index=True)
-        save_all_data(combined_df, start_date, output_folder)
+        save_data(combined_df, s_date, output_folder)
     else:
         print("No data was downloaded for any device.")
 
-def load_credentials(config_file: str = 'config.cfg') -> Tuple[Optional[str], Optional[str]]:
+def load_config(config_file: str = 'config.cfg') -> Optional[Dict[str, Any]]:
     """
-    Loads Emporia credentials from a configuration file.
+    Loads Emporia credentials and other configuration from a file.
 
     Args:
         config_file (str, optional): Path to the config file. Defaults to 'config.cfg'.
 
     Returns:
-        Tuple[Optional[str], Optional[str]]: A tuple of (email, password), or (None, None).
+        Optional[Dict[str, Any]]: A dictionary of configuration values, or None.
     """
     config = configparser.ConfigParser()
     if not os.path.exists(config_file):
         print(f"Error: Configuration file '{config_file}' not found.")
         print("Create it with:\n[emporia]\nusername = your_email@example.com\npassword = your_password")
-        return None, None
+        return None
         
     config.read(config_file)
 
     try:
-        email = config['emporia']['username']
-        password = config['emporia']['password']
+        settings = {
+            'email': config['emporia']['username'],
+            'password': config['emporia']['password'],
+            'start_date': config['emporia'].get('start_date'),
+            'end_date': config['emporia'].get('end_date'),
+            'granularity': config['emporia'].get('granularity', 'DAY').upper()
+        }
     except (KeyError, configparser.NoSectionError):
         print("Error: 'emporia' section not found in config.cfg.")
         print("Ensure the config file has:\n[emporia]\nusername = your_email@example.com\npassword = your_password")
-        return None, None
+        return None
 
-    if email == "your_email@example.com" or password == "your_password":
+    if settings['email'] == "your_email@example.com" or settings['password'] == "your_password":
         print("Please update config.cfg with your Emporia credentials.")
-        return None, None
+        return None
 
-    return email, password
+    return settings
 
 def main():
     """Main function to run the data download process."""
-    email, password = load_credentials()
-    if email and password:
-        download_emporia_data(email, password)
+    config = load_config()
+    if config:
+        download_emporia_data(
+            email=config['email'],
+            password=config['password'],
+            start_date=config['start_date'],
+            end_date=config['end_date'],
+            granularity=config['granularity']
+        )
 
 if __name__ == '__main__':
     main()

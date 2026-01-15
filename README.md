@@ -6,7 +6,7 @@ This project provides a Python script (`download_data.py`) to connect to the Emp
 
 - Authenticates with the Emporia Energy API using credentials from a configuration file.
 - Fetches a list of all devices associated with your account.
-- Downloads 1-minute (or hourly, depending on configuration) usage data for each channel of each device for the previous calendar month.
+- Downloads usage data for each channel of each device for the previous calendar month, with configurable granularity.
 - Saves the collected data into individual CSV files per device.
 
 ## Setup
@@ -28,8 +28,19 @@ This project provides a Python script (`download_data.py`) to connect to the Emp
     [emporia]
     username = your_emporia_email@example.com
     password = your_emporia_password
+    start_date = YYYY-MM-DD
+    end_date = YYYY-MM-DD
+    granularity = DAY
     ```
     Replace `your_emporia_email@example.com` and `your_emporia_password` with your actual Emporia account email and password.
+
+    **Configuration Options:**
+    *   `username`: Your Emporia Energy account email address. (Required)
+    *   `password`: Your Emporia Energy account password. (Required)
+    *   `start_date`: (Optional) The start date for data download in `YYYY-MM-DD` format. If left empty, the script defaults to the first day of the previous calendar month.
+    *   `end_date`: (Optional) The end date for data download in `YYYY-MM-DD` format. If left empty, the script defaults to the last day of the previous calendar month.
+    *   `granularity`: (Optional) The time interval for the data. Supported values are `MINUTE`, `HOUR`, or `DAY`. Defaults to `DAY`.
+
 
 ## Usage
 
