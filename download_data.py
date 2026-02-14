@@ -4,7 +4,19 @@ from datetime import datetime, date, timedelta
 from pyemvue import PyEmVue
 from pyemvue.enums import Scale
 import configparser
+import logging
+import argparse
 from typing import Optional, Tuple, Dict, Any, List
+
+def setup_logging(verbosity: str):
+    """
+    Configures the logging module based on the provided verbosity level.
+
+    Args:
+        verbosity (str): The desired logging level ('DEBUG', 'INFO', 'WARNING', 'ERROR').
+    """
+    level = getattr(logging, verbosity.upper(), logging.INFO)
+    logging.basicConfig(level=level, format='%(levelname)s: %(message)s')
 
 def get_last_month_dates() -> Tuple[date, date]:
     """
@@ -30,15 +42,15 @@ def authenticate(email: str, password: str) -> Optional[PyEmVue]:
     Returns:
         Optional[PyEmVue]: A logged-in PyEmVue object, or None if login fails.
     """
-    print("Attempting to log in to Emporia Energy API...")
+    logging.info("Attempting to log in to Emporia Energy API...")
     try:
         vue = PyEmVue()
         vue.login(username=email, password=password)
-        print("Successfully logged in to Emporia.")
+        logging.info("Successfully logged in to Emporia.")
         return vue
     except Exception as e:
-        print(f"Error logging in to Emporia: {e}")
-        print("Please check your credentials and network connection.")
+        logging.error(f"Error logging in to Emporia: {e}")
+        logging.error("Please check your credentials and network connection.")
         return None
 
 def get_emporia_device_info(vue: PyEmVue) -> Optional[Dict[int, Any]]:
@@ -52,7 +64,7 @@ def get_emporia_device_info(vue: PyEmVue) -> Optional[Dict[int, Any]]:
     Returns:
         Optional[Dict[int, Any]]: A dictionary of device information, or None if fetching fails.
     """
-    print("Fetching devices...")
+    logging.info("Fetching devices...")
     try:
         devices = vue.get_devices()
         device_info: Dict[int, Any] = {}
@@ -62,10 +74,10 @@ def get_emporia_device_info(vue: PyEmVue) -> Optional[Dict[int, Any]]:
                 device_info[device.device_gid] = device
             else:
                 device_info[device.device_gid].channels.extend(device.channels)
-        print(f"Found {len(device_info)} devices.")
+        logging.info(f"Found {len(device_info)} devices.")
         return device_info
     except Exception as e:
-        print(f"Error getting devices: {e}")
+        logging.error(f"Error getting devices: {e}")
         return None
 
 def fetch_channel_data(vue: PyEmVue, device: Any, channel: Any, start_date: date, end_date: date, granularity: str) -> Optional[pd.DataFrame]:
@@ -83,11 +95,14 @@ def fetch_channel_data(vue: PyEmVue, device: Any, channel: Any, start_date: date
     Returns:
         Optional[pd.DataFrame]: A DataFrame with the channel's usage data (in kWh) and cost (in USD), or None.
     """
+    if channel.name is None:
+        logging.debug(f"  Skipping channel with no name and channel number {channel.channel_num}")
+        return None
     if ',' in str(channel.channel_num):
-        print(f"  Skipping pseudo-channel: {channel.name} ({channel.channel_num})")
+        logging.debug(f"  Skipping pseudo-channel: {channel.name} ({channel.channel_num})")
         return None
 
-    print(f"  Fetching data for channel: {channel.name} ({channel.channel_num})")
+    logging.info(f"  Fetching data for channel: {channel.name} ({channel.channel_num})")
     
     scale_map = {
         'MINUTE': (Scale.MINUTE.value, 'm'),
@@ -96,7 +111,7 @@ def fetch_channel_data(vue: PyEmVue, device: Any, channel: Any, start_date: date
     }
     
     if granularity.upper() not in scale_map:
-        print(f"  Unsupported granularity: {granularity}")
+        logging.warning(f"  Unsupported granularity: {granularity}")
         return None
         
     scale_value, time_unit = scale_map[granularity.upper()]
@@ -113,7 +128,7 @@ def fetch_channel_data(vue: PyEmVue, device: Any, channel: Any, start_date: date
             # Filter out None values from usage_data
             filtered_usage_data = [val for val in usage_data if val is not None]
             if not filtered_usage_data:
-                print(f"  No valid usage data returned for channel {channel.name}")
+                logging.warning(f"  No valid usage data returned for channel {channel.name}")
                 return None
 
             rate = device.usage_cent_per_kw_hour / 100 # Convert cents to dollars
@@ -126,10 +141,10 @@ def fetch_channel_data(vue: PyEmVue, device: Any, channel: Any, start_date: date
                 f'channel_{channel.channel_num}_cost_usd': cost
             })
         else:
-            print(f"  No data returned for channel {channel.name}")
+            logging.warning(f"  No data returned for channel {channel.name}")
             return None
     except Exception as e:
-        print(f"  Error fetching data for channel {channel.name}: {e}")
+        logging.error(f"  Error fetching data for channel {channel.name}: {e}")
         return None
 
 def fetch_device_data(vue: PyEmVue, device: Any, start_date: date, end_date: date, granularity: str) -> Optional[pd.DataFrame]:
@@ -146,12 +161,12 @@ def fetch_device_data(vue: PyEmVue, device: Any, start_date: date, end_date: dat
     Returns:
         Optional[pd.DataFrame]: A merged DataFrame of all channel data for the device.
     """
-    print(f"Fetching data for device: {device.device_name} (gid: {device.device_gid})")
+    logging.info(f"Fetching data for device: {device.device_name} (gid: {device.device_gid})")
     channel_dfs = [fetch_channel_data(vue, device, ch, start_date, end_date, granularity) for ch in device.channels]
     channel_dfs = [df for df in channel_dfs if df is not None]
 
     if not channel_dfs:
-        print(f"No data returned for any channels in {device.device_name}")
+        logging.warning(f"No data returned for any channels in {device.device_name}")
         return None
 
     # Merge all channel DataFrames for the device
@@ -174,11 +189,11 @@ def save_data(df: pd.DataFrame, start_date: date, output_folder: str):
     """
     if not os.path.exists(output_folder):
         os.makedirs(output_folder)
-        print(f"Created output directory: {output_folder}")
+        logging.info(f"Created output directory: {output_folder}")
 
     filename = f"{output_folder}/emporia_data_{start_date.strftime('%Y-%m')}.csv"
     df.to_csv(filename, index=False)
-    print(f"Successfully saved device data to {filename}")
+    logging.info(f"Successfully saved device data to {filename}")
 
 def download_emporia_data(email: str, password: str, start_date: Optional[str], end_date: Optional[str], granularity: str, output_folder: str = 'emporia_data'):
     """
@@ -203,10 +218,10 @@ def download_emporia_data(email: str, password: str, start_date: Optional[str], 
     if start_date and end_date:
         s_date = datetime.strptime(start_date, '%Y-%m-%d').date()
         e_date = datetime.strptime(end_date, '%Y-%m-%d').date()
-        print(f"Downloading data from {s_date} to {e_date} with {granularity} granularity.")
+        logging.info(f"Downloading data from {s_date} to {e_date} with {granularity} granularity.")
     else:
         s_date, e_date = get_last_month_dates()
-        print(f"Downloading data from {s_date} to {e_date} with {granularity} granularity.")
+        logging.info(f"Downloading data from {s_date} to {e_date} with {granularity} granularity.")
 
     all_device_dfs: List[pd.DataFrame] = []
     for gid, device in device_info.items():
@@ -218,7 +233,7 @@ def download_emporia_data(email: str, password: str, start_date: Optional[str], 
         combined_df = pd.concat(all_device_dfs, ignore_index=True)
         save_data(combined_df, s_date, output_folder)
     else:
-        print("No data was downloaded for any device.")
+        logging.warning("No data was downloaded for any device.")
 
 def load_config(config_file: str = 'config.cfg') -> Optional[Dict[str, Any]]:
     """
@@ -232,8 +247,8 @@ def load_config(config_file: str = 'config.cfg') -> Optional[Dict[str, Any]]:
     """
     config = configparser.ConfigParser()
     if not os.path.exists(config_file):
-        print(f"Error: Configuration file '{config_file}' not found.")
-        print("Create it with:\n[emporia]\nusername = your_email@example.com\npassword = your_password")
+        logging.error(f"Error: Configuration file '{config_file}' not found.")
+        logging.error("Create it with:\n[emporia]\nusername = your_email@example.com\npassword = your_password")
         return None
         
     config.read(config_file)
@@ -247,18 +262,28 @@ def load_config(config_file: str = 'config.cfg') -> Optional[Dict[str, Any]]:
             'granularity': config['emporia'].get('granularity', 'DAY').upper()
         }
     except (KeyError, configparser.NoSectionError):
-        print("Error: 'emporia' section not found in config.cfg.")
-        print("Ensure the config file has:\n[emporia]\nusername = your_email@example.com\npassword = your_password")
+        logging.error("Error: 'emporia' section not found in config.cfg.")
+        logging.error("Ensure the config file has:\n[emporia]\nusername = your_email@example.com\npassword = your_password")
         return None
 
     if settings['email'] == "your_email@example.com" or settings['password'] == "your_password":
-        print("Please update config.cfg with your Emporia credentials.")
+        logging.error("Please update config.cfg with your Emporia credentials.")
         return None
 
     return settings
 
 def main():
     """Main function to run the data download process."""
+    parser = argparse.ArgumentParser(description='Download Emporia Energy data.')
+    parser.add_argument('-v', '--verbose', action='store_const', dest='verbosity', const='DEBUG',
+                        help='Enable verbose logging (DEBUG level).')
+    parser.add_argument('-q', '--quiet', action='store_const', dest='verbosity', const='WARNING',
+                        help='Enable quiet logging (WARNING level).')
+    args = parser.parse_args()
+
+    # Default to INFO level if no verbosity flag is set
+    setup_logging(args.verbosity or 'INFO')
+
     config = load_config()
     if config:
         download_emporia_data(

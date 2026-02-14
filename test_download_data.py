@@ -149,9 +149,7 @@ class TestFetchChannelData:
         df = download_data.fetch_channel_data(mock_vue, mock_device, mock_channel, start_date, end_date, "WEEKS")
 
         assert df is None
-        mock_vue.get_chart_usage.assert_not_called()
-
-    
+        mock_vue.get_chart_usage.assert_not_called()    
 def test_csv_output_header(tmp_path, monkeypatch):
     """Test that the output CSV file has the correct header."""
     mock_auth = MagicMock()
