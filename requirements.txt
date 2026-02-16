@@ -1,3 +1,4 @@
 pyemvue
 pandas
 pytest
+PyYAML

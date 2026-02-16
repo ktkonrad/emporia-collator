@@ -10,7 +10,7 @@ wheels/
 .venv
 
 # User credentials
-config.cfg
+config.yaml
 
 # output data
 emporia_data

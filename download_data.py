@@ -3,7 +3,7 @@ import pandas as pd
 from datetime import datetime, date, timedelta
 from pyemvue import PyEmVue
 from pyemvue.enums import Scale
-import configparser
+
 import logging
 import argparse
 from typing import Optional, Tuple, Dict, Any, List
@@ -195,13 +195,9 @@ def save_data(df: pd.DataFrame, start_date: date, output_folder: str):
     df.to_csv(filename, index=False)
     logging.info(f"Successfully saved device data to {filename}")
 
-def load_output_config(config_file: str = 'config.cfg') -> Dict[str, Dict[str, List[int]]]:
+def load_output_config(config_file: str = 'config.yaml') -> Dict[str, Dict[str, List[int]]]:
     """
-    Loads the output column configuration from the config file.
-
-    Each section starting with 'output_column:' defines a column in the output CSV.
-    The section name after the colon is used as the column name.
-    Within each section, keys are device names and values are comma-separated channel numbers.
+    Loads the output column configuration from the YAML config file.
 
     Args:
         config_file (str): Path to the config file.
@@ -211,61 +207,39 @@ def load_output_config(config_file: str = 'config.cfg') -> Dict[str, Dict[str, L
                                           and values are dictionaries mapping device names
                                           to lists of channel numbers.
     """
-    config = configparser.ConfigParser()
     if not os.path.exists(config_file):
         return {}
 
-    config.read(config_file)
+    with open(config_file, 'r') as f:
+        try:
+            config = yaml.safe_load(f)
+        except yaml.YAMLError as e:
+            logging.error(f"Error parsing YAML file: {e}")
+            return {}
+
     output_config = {}
+    if 'output' in config and config['output']:
+        for column in config['output']:
+            column_name = column.get('name')
+            if not column_name:
+                logging.warning("Skipping output column with no name.")
+                continue
 
-    for section in config.sections():
-        if section.startswith('output_column:'):
-            column_name = section.split(':', 1)[1].strip()
             device_channels = {}
-            for device_name, channels_str in config.items(section):
-                try:
-                    channels = [int(c.strip()) for c in channels_str.split(',') if c.strip()]
-                    device_channels[device_name] = channels
-                except ValueError:
-                    logging.warning(f"Skipping invalid channel numbers in section {section} for device {device_name}: {channels_str}")
-            output_config[column_name] = device_channels
-
-    return output_config
-
-
-def load_output_config(config_file: str = 'config.cfg') -> Dict[str, Dict[str, List[int]]]:
-    """
-    Loads the output column configuration from the config file.
-
-    Each section starting with 'output_column:' defines a column in the output CSV.
-    The section name after the colon is used as the column name.
-    Within each section, keys are device names and values are comma-separated channel numbers.
-
-    Args:
-        config_file (str): Path to the config file.
-
-    Returns:
-        Dict[str, Dict[str, List[int]]]: A dictionary where keys are column names
-                                          and values are dictionaries mapping device names
-                                          to lists of channel numbers.
-    """
-    config = configparser.ConfigParser()
-    if not os.path.exists(config_file):
-        return {}
-
-    config.read(config_file)
-    output_config = {}
-
-    for section in config.sections():
-        if section.startswith('output_column:'):
-            column_name = section.split(':', 1)[1].strip()
-            device_channels = {}
-            for device_name, channels_str in config.items(section):
-                try:
-                    channels = [int(c.strip()) for c in channels_str.split(',') if c.strip()]
-                    device_channels[device_name] = channels
-                except ValueError:
-                    logging.warning(f"Skipping invalid channel numbers in section {section} for device {device_name}: {channels_str}")
+            if 'devices' in column and column['devices']:
+                for device in column['devices']:
+                    device_name = device.get('name')
+                    channels = device.get('channels')
+                    if device_name and channels:
+                        # Filter out non-integer channel values
+                        valid_channels = []
+                        for c in channels:
+                            try:
+                                valid_channels.append(int(c))
+                            except (ValueError, TypeError):
+                                logging.warning(f"Skipping invalid channel value '{c}' for device '{device_name}' in column '{column_name}'.")
+                        if valid_channels:
+                            device_channels[device_name] = valid_channels
             output_config[column_name] = device_channels
 
     return output_config
@@ -371,39 +345,50 @@ def download_emporia_data(email: str, password: str, start_date: Optional[str], 
         else:
             logging.warning("No data was downloaded for any device.")
 
-def load_config(config_file: str = 'config.cfg') -> Optional[Dict[str, Any]]:
+import yaml
+
+def load_config(config_file: str = 'config.yaml') -> Optional[Dict[str, Any]]:
     """
-    Loads Emporia credentials and other configuration from a file.
-
+    Loads Emporia credentials and other configuration from a YAML file.
     Args:
-        config_file (str, optional): Path to the config file. Defaults to 'config.cfg'.
-
+        config_file (str, optional): Path to the config file. Defaults to 'config.yaml'.
     Returns:
         Optional[Dict[str, Any]]: A dictionary of configuration values, or None.
     """
-    config = configparser.ConfigParser()
     if not os.path.exists(config_file):
         logging.error(f"Error: Configuration file '{config_file}' not found.")
-        logging.error("Create it with:\n[emporia]\nusername = your_email@example.com\npassword = your_password")
         return None
-        
-    config.read(config_file)
+
+    with open(config_file, 'r') as f:
+        try:
+            config = yaml.safe_load(f)
+        except yaml.YAMLError as e:
+            logging.error(f"Error parsing YAML file: {e}")
+            return None
 
     try:
+        credentials = config.get('credentials')
+        if credentials is None:
+            credentials = {}
+        
+        data_config = config.get('data', {})
+
+        start_date_obj = data_config.get('start_date')
+        end_date_obj = data_config.get('end_date')
+
         settings = {
-            'email': config['emporia']['username'],
-            'password': config['emporia']['password'],
-            'start_date': config['emporia'].get('start_date'),
-            'end_date': config['emporia'].get('end_date'),
-            'granularity': config['emporia'].get('granularity', 'DAY').upper()
+            'email': credentials.get('username'),
+            'password': credentials.get('password'),
+            'start_date': start_date_obj.strftime('%Y-%m-%d') if isinstance(start_date_obj, date) else start_date_obj,
+            'end_date': end_date_obj.strftime('%Y-%m-%d') if isinstance(end_date_obj, date) else end_date_obj,
+            'granularity': data_config.get('granularity', 'DAY').upper()
         }
-    except (KeyError, configparser.NoSectionError):
-        logging.error("Error: 'emporia' section not found in config.cfg.")
-        logging.error("Ensure the config file has:\n[emporia]\nusername = your_email@example.com\npassword = your_password")
+    except KeyError:
+        logging.error("Error: 'credentials' section with 'username' and 'password' not found in config.yaml.")
         return None
 
-    if settings['email'] == "your_email@example.com" or settings['password'] == "your_password":
-        logging.error("Please update config.cfg with your Emporia credentials.")
+    if not settings['email'] or not settings['password'] or settings['email'] == 'your_emporia_email@example.com':
+        logging.error("Please update config.yaml with your Emporia credentials.")
         return None
 
     return settings
