@@ -83,7 +83,7 @@ class TestDownloadEmporiaData:
         self.mock_get_device_info = MagicMock(return_value=self.mock_device_info)
         monkeypatch.setattr(download_data, 'get_emporia_device_info', self.mock_get_device_info)
 
-        self.mock_fetch_data = MagicMock(return_value=pd.DataFrame({'device_gid': [123]}))
+        self.mock_fetch_data = MagicMock(return_value=pd.DataFrame({'instant': [datetime(2023, 1, 1)], 'device_gid': [123]}))
         monkeypatch.setattr(download_data, 'fetch_device_data', self.mock_fetch_data)
 
         self.mock_save = MagicMock()
@@ -103,6 +103,101 @@ class TestDownloadEmporiaData:
         self.mock_fetch_data.assert_called_once_with(
             self.mock_vue_instance, self.mock_device1, expected_start, expected_end, 'HOUR'
         )
+
+    def test_with_output_config(self, monkeypatch):
+        """Test data processing with a custom output configuration."""
+        mock_output_config = {
+            "Custom Column": {
+                "Test Device": [1, 2]
+            }
+        }
+        monkeypatch.setattr(download_data, 'load_output_config', MagicMock(return_value=mock_output_config))
+
+        # Mock devices and channels
+        mock_device = MagicMock()
+        mock_device.device_name = "Test Device"
+        mock_device.channels = [MagicMock(channel_num='1'), MagicMock(channel_num='2')]
+        self.mock_get_device_info.return_value = {123: mock_device}
+
+        # Mock channel data fetching
+        df1 = pd.DataFrame({'instant': [datetime(2023, 1, 1)], 'channel_1_usage_kwh': [1.0], 'channel_1_cost_usd': [0.1]})
+        df2 = pd.DataFrame({'instant': [datetime(2023, 1, 1)], 'channel_2_usage_kwh': [2.0], 'channel_2_cost_usd': [0.2]})
+        
+        mock_fetch_channel = MagicMock(side_effect=[df1, df2])
+        monkeypatch.setattr(download_data, 'fetch_channel_data', mock_fetch_channel)
+
+        download_data.download_emporia_data('email', 'pass', '2023-01-01', '2023-01-31', 'DAY')
+
+        # Assertions
+        self.mock_save.assert_called_once()
+        saved_df = self.mock_save.call_args[0][0]
+        
+        assert 'Custom Column_usage_kwh' in saved_df.columns
+        assert 'Custom Column_cost_usd' in saved_df.columns
+        assert saved_df['Custom Column_usage_kwh'].iloc[0] == pytest.approx(3.0)  # 1.0 + 2.0
+        assert saved_df['Custom Column_cost_usd'].iloc[0] == pytest.approx(0.3)   # 0.1 + 0.2
+        self.mock_fetch_data.assert_not_called() # Ensure the old path is not taken
+
+class TestLoadOutputConfig:
+    def test_load_valid_output_config(self, mock_config_file):
+        """Test loading a valid output column configuration."""
+        config_content = """
+        [output_column:Total Usage]
+        device1 = 1,2,3
+        device2 = 4
+
+        [output_column:Sub-metered]
+        device1 = 5,6
+        """
+        config_path = mock_config_file(config_content)
+        output_config = download_data.load_output_config(config_file=str(config_path))
+        
+        expected_config = {
+            "Total Usage": {
+                "device1": [1, 2, 3],
+                "device2": [4]
+            },
+            "Sub-metered": {
+                "device1": [5, 6]
+            }
+        }
+        assert output_config == expected_config
+
+    def test_load_empty_output_config(self, mock_config_file):
+        """Test loading a config file with no output column sections."""
+        config_content = """
+        [emporia]
+        username = user@example.com
+        password = pass
+        """
+        config_path = mock_config_file(config_content)
+        output_config = download_data.load_output_config(config_file=str(config_path))
+        assert output_config == {}
+
+    def test_load_config_with_invalid_channels(self, mock_config_file):
+        """Test that invalid channel numbers are gracefully skipped."""
+        config_content = """
+        [output_column:Mixed Channels]
+        device1 = 1, 2, three, 4
+        device2 = 5, 6
+        """
+        config_path = mock_config_file(config_content)
+        output_config = download_data.load_output_config(config_file=str(config_path))
+        
+        expected_config = {
+            "Mixed Channels": {
+                "device2": [5, 6]
+            }
+        }
+        # This assumes the current implementation skips the entire entry if any channel is invalid
+        assert output_config == expected_config
+
+    def test_missing_config_file(self):
+        """Test that a missing config file returns an empty dictionary."""
+        output_config = download_data.load_output_config(config_file="non_existent_file.cfg")
+        assert output_config == {}
+
+
 
 
 class TestFetchChannelData:
@@ -180,5 +275,5 @@ def test_csv_output_header(tmp_path, monkeypatch):
     assert csv_file_path.exists()
 
     df = pd.read_csv(csv_file_path)
-    expected_headers = ['instant', 'channel_1_usage_kwh', 'channel_1_cost_usd', 'device_gid', 'device_name']
+    expected_headers = ['instant', 'Test Device_usage_kwh', 'Test Device_cost_usd']
     assert list(df.columns) == expected_headers

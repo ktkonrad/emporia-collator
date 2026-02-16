@@ -41,6 +41,29 @@ This project provides a Python script (`download_data.py`) to connect to the Emp
     *   `end_date`: (Optional) The end date for data download in `YYYY-MM-DD` format. If left empty, the script defaults to the last day of the previous calendar month.
     *   `granularity`: (Optional) The time interval for the data. Supported values are `MINUTE`, `HOUR`, or `DAY`. Defaults to `DAY`.
 
+## Custom Output Columns
+
+By default, the script will output one column for each of your Emporia devices, containing the sum of all channels on that device. You can customize the output by defining specific columns in your `config.cfg` file. This allows you to group channels from different devices into a single column.
+
+Each custom column is defined by a section in the `config.cfg` file that starts with `output_column:`. The name of the column will be the text following the colon. Within each section, you specify the devices and channels to include in the column.
+
+**Example:**
+
+```ini
+[output_column:Total Home Usage]
+Main Panel = 1, 2, 3
+Kitchen = 4, 5
+
+[output_column:Upstairs]
+Main Panel = 6, 7
+```
+
+In this example, the output CSV file will have two columns: `Total Home Usage` and `Upstairs`.
+
+*   The `Total Home Usage` column will be the sum of channels 1, 2, and 3 from the "Main Panel" device and channels 4 and 5 from the "Kitchen" device.
+*   The `Upstairs` column will be the sum of channels 6 and 7 from the "Main Panel" device.
+
+If no `output_column` sections are present in the `config.cfg` file, the script will revert to the default behavior of creating one column per device.
 
 ## Usage
 

@@ -195,6 +195,82 @@ def save_data(df: pd.DataFrame, start_date: date, output_folder: str):
     df.to_csv(filename, index=False)
     logging.info(f"Successfully saved device data to {filename}")
 
+def load_output_config(config_file: str = 'config.cfg') -> Dict[str, Dict[str, List[int]]]:
+    """
+    Loads the output column configuration from the config file.
+
+    Each section starting with 'output_column:' defines a column in the output CSV.
+    The section name after the colon is used as the column name.
+    Within each section, keys are device names and values are comma-separated channel numbers.
+
+    Args:
+        config_file (str): Path to the config file.
+
+    Returns:
+        Dict[str, Dict[str, List[int]]]: A dictionary where keys are column names
+                                          and values are dictionaries mapping device names
+                                          to lists of channel numbers.
+    """
+    config = configparser.ConfigParser()
+    if not os.path.exists(config_file):
+        return {}
+
+    config.read(config_file)
+    output_config = {}
+
+    for section in config.sections():
+        if section.startswith('output_column:'):
+            column_name = section.split(':', 1)[1].strip()
+            device_channels = {}
+            for device_name, channels_str in config.items(section):
+                try:
+                    channels = [int(c.strip()) for c in channels_str.split(',') if c.strip()]
+                    device_channels[device_name] = channels
+                except ValueError:
+                    logging.warning(f"Skipping invalid channel numbers in section {section} for device {device_name}: {channels_str}")
+            output_config[column_name] = device_channels
+
+    return output_config
+
+
+def load_output_config(config_file: str = 'config.cfg') -> Dict[str, Dict[str, List[int]]]:
+    """
+    Loads the output column configuration from the config file.
+
+    Each section starting with 'output_column:' defines a column in the output CSV.
+    The section name after the colon is used as the column name.
+    Within each section, keys are device names and values are comma-separated channel numbers.
+
+    Args:
+        config_file (str): Path to the config file.
+
+    Returns:
+        Dict[str, Dict[str, List[int]]]: A dictionary where keys are column names
+                                          and values are dictionaries mapping device names
+                                          to lists of channel numbers.
+    """
+    config = configparser.ConfigParser()
+    if not os.path.exists(config_file):
+        return {}
+
+    config.read(config_file)
+    output_config = {}
+
+    for section in config.sections():
+        if section.startswith('output_column:'):
+            column_name = section.split(':', 1)[1].strip()
+            device_channels = {}
+            for device_name, channels_str in config.items(section):
+                try:
+                    channels = [int(c.strip()) for c in channels_str.split(',') if c.strip()]
+                    device_channels[device_name] = channels
+                except ValueError:
+                    logging.warning(f"Skipping invalid channel numbers in section {section} for device {device_name}: {channels_str}")
+            output_config[column_name] = device_channels
+
+    return output_config
+
+
 def download_emporia_data(email: str, password: str, start_date: Optional[str], end_date: Optional[str], granularity: str, output_folder: str = 'emporia_data'):
     """
     Orchestrates the download of Emporia data with configurable granularity into a single CSV file.
@@ -223,17 +299,77 @@ def download_emporia_data(email: str, password: str, start_date: Optional[str], 
         s_date, e_date = get_last_month_dates()
         logging.info(f"Downloading data from {s_date} to {e_date} with {granularity} granularity.")
 
-    all_device_dfs: List[pd.DataFrame] = []
-    for gid, device in device_info.items():
-        device_df = fetch_device_data(vue, device, s_date, e_date, granularity)
-        if device_df is not None:
-            all_device_dfs.append(device_df)
+    output_config = load_output_config()
 
-    if all_device_dfs:
-        combined_df = pd.concat(all_device_dfs, ignore_index=True)
-        save_data(combined_df, s_date, output_folder)
+    if output_config:
+        all_column_dfs = []
+        for column_name, devices in output_config.items():
+            logging.info(f"Processing column: {column_name}")
+            column_channel_dfs = []
+            for device_name, channels in devices.items():
+                device = next((d for d in device_info.values() if d.device_name == device_name), None)
+                if not device:
+                    logging.warning(f"Device '{device_name}' not found for column '{column_name}'. Skipping.")
+                    continue
+                
+                for channel_num in channels:
+                    channel = next((c for c in device.channels if c.channel_num == str(channel_num)), None)
+                    if channel:
+                        channel_df = fetch_channel_data(vue, device, channel, s_date, e_date, granularity)
+                        if channel_df is not None:
+                            # Rename columns to be generic before aggregation
+                            usage_col = next((col for col in channel_df.columns if 'usage_kwh' in col), None)
+                            cost_col = next((col for col in channel_df.columns if 'cost_usd' in col), None)
+                            if usage_col and cost_col:
+                                channel_df.rename(columns={usage_col: 'usage_kwh', cost_col: 'cost_usd'}, inplace=True)
+                                column_channel_dfs.append(channel_df)
+                    else:
+                        logging.warning(f"Channel '{channel_num}' not found in device '{device_name}'. Skipping.")
+            
+            if column_channel_dfs:
+                # Merge all channel data for this column
+                merged_column_df = pd.concat(column_channel_dfs).groupby('instant').sum().reset_index()
+                # Rename aggregated columns to reflect the output column name
+                merged_column_df.rename(columns={'usage_kwh': f'{column_name}_usage_kwh', 'cost_usd': f'{column_name}_cost_usd'}, inplace=True)
+                all_column_dfs.append(merged_column_df)
+
+        if all_column_dfs:
+            # Merge all column DataFrames into a single DataFrame
+            final_df = all_column_dfs[0]
+            for i in range(1, len(all_column_dfs)):
+                final_df = pd.merge(final_df, all_column_dfs[i], on='instant', how='outer')
+            save_data(final_df, s_date, output_folder)
+        else:
+            logging.warning("No data was downloaded for any configured output column.")
     else:
-        logging.warning("No data was downloaded for any device.")
+        # Default behavior: one column per device
+        all_device_dfs: List[pd.DataFrame] = []
+        for gid, device in device_info.items():
+            device_df = fetch_device_data(vue, device, s_date, e_date, granularity)
+            if device_df is not None:
+                # Sum up usage and cost across all channels for the device
+                usage_cols = [col for col in device_df.columns if 'usage_kwh' in col]
+                cost_cols = [col for col in device_df.columns if 'cost_usd' in col]
+                
+                # Ensure 'instant' is the index for summation
+                device_df.set_index('instant', inplace=True)
+
+                # Sum usage and cost columns
+                device_df[f'{device.device_name}_usage_kwh'] = device_df[usage_cols].sum(axis=1)
+                device_df[f'{device.device_name}_cost_usd'] = device_df[cost_cols].sum(axis=1)
+                
+                # Keep only the aggregated columns and reset index
+                aggregated_df = device_df[[f'{device.device_name}_usage_kwh', f'{device.device_name}_cost_usd']].reset_index()
+                all_device_dfs.append(aggregated_df)
+
+        if all_device_dfs:
+            # Merge all device DataFrames into a single DataFrame
+            final_df = all_device_dfs[0]
+            for i in range(1, len(all_device_dfs)):
+                final_df = pd.merge(final_df, all_device_dfs[i], on='instant', how='outer')
+            save_data(final_df, s_date, output_folder)
+        else:
+            logging.warning("No data was downloaded for any device.")
 
 def load_config(config_file: str = 'config.cfg') -> Optional[Dict[str, Any]]:
     """

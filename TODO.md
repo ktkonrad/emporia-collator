@@ -1,4 +1,0 @@
-- [x] Skip channel lookup when name is None
-- [] Add new config options to control output columns based on device and channel. Each column should be a sum of 1 or more channels within a device, with an easy option to default to all channels within a device. The config should specify the column name that will be output and the device and set of channels corresponding to it. If the config is empty, the default behavior should be to output one column per device, using the sum of values across channels from that device and using the device name as the column name. 
-  - [] Update tests to ensure this works.
-  - [] Update the readme to describe this functionality.
