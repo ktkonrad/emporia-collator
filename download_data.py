@@ -2,7 +2,7 @@ import os
 import pandas as pd
 from datetime import datetime, date, timedelta
 from pyemvue import PyEmVue
-from pyemvue.enums import Scale
+from pyemvue.enums import Scale, Unit
 
 import logging
 import argparse
@@ -55,8 +55,7 @@ def authenticate(email: str, password: str) -> Optional[PyEmVue]:
 
 def get_emporia_device_info(vue: PyEmVue) -> Optional[Dict[int, Any]]:
     """
-    Fetches all devices, populates their properties including electricity rate, 
-    and consolidates channels for devices with multiple channel sets.
+    Fetches all devices and consolidates channels for devices with multiple channel sets.
 
     Args:
         vue (PyEmVue): The logged-in PyEmVue object.
@@ -69,7 +68,6 @@ def get_emporia_device_info(vue: PyEmVue) -> Optional[Dict[int, Any]]:
         devices = vue.get_devices()
         device_info: Dict[int, Any] = {}
         for device in devices:
-            vue.populate_device_properties(device)
             if device.device_gid not in device_info:
                 device_info[device.device_gid] = device
             else:
@@ -80,13 +78,12 @@ def get_emporia_device_info(vue: PyEmVue) -> Optional[Dict[int, Any]]:
         logging.error(f"Error getting devices: {e}")
         return None
 
-def fetch_channel_data(vue: PyEmVue, device: Any, channel: Any, start_date: date, end_date: date, granularity: str) -> Optional[pd.DataFrame]:
+def fetch_channel_data(vue: PyEmVue, channel: Any, start_date: date, end_date: date, granularity: str) -> Optional[pd.DataFrame]:
     """
     Fetches usage data for a single channel with a specified granularity and calculates the cost.
 
     Args:
         vue (PyEmVue): The logged-in PyEmVue object.
-        device (Any): The device object, containing location information with electricity rate.
         channel (Any): The channel object to fetch data for.
         start_date (date): The start date for the data fetch.
         end_date (date): The end date for the data fetch.
@@ -121,7 +118,8 @@ def fetch_channel_data(vue: PyEmVue, device: Any, channel: Any, start_date: date
             channel=channel,
             start=datetime.combine(start_date, datetime.min.time()),
             end=datetime.combine(end_date, datetime.max.time()).replace(second=0, microsecond=0),
-            scale=scale_value
+            scale=scale_value,
+            unit=Unit.USD.value
         )
 
         if usage_data:
@@ -131,14 +129,10 @@ def fetch_channel_data(vue: PyEmVue, device: Any, channel: Any, start_date: date
                 logging.warning(f"  No valid usage data returned for channel {channel.name}")
                 return None
 
-            rate = device.usage_cent_per_kw_hour / 100 # Convert cents to dollars
             timestamps = pd.to_datetime(start_time) + pd.to_timedelta(range(len(filtered_usage_data)), unit=time_unit)
-            usage_kwh = [val / 1000 for val in filtered_usage_data] # Assuming usage from API is in Wh, convert to kWh
-            cost = [val * rate for val in usage_kwh]
             return pd.DataFrame({
                 'instant': timestamps,
-                f'channel_{channel.channel_num}_usage_kwh': usage_kwh,
-                f'channel_{channel.channel_num}_cost_usd': cost
+                f'channel_{channel.channel_num}_cost_usd': filtered_usage_data
             })
         else:
             logging.warning(f"  No data returned for channel {channel.name}")
@@ -162,7 +156,7 @@ def fetch_device_data(vue: PyEmVue, device: Any, start_date: date, end_date: dat
         Optional[pd.DataFrame]: A merged DataFrame of all channel data for the device.
     """
     logging.info(f"Fetching data for device: {device.device_name} (gid: {device.device_gid})")
-    channel_dfs = [fetch_channel_data(vue, device, ch, start_date, end_date, granularity) for ch in device.channels]
+    channel_dfs = [fetch_channel_data(vue, ch, start_date, end_date, granularity) for ch in device.channels]
     channel_dfs = [df for df in channel_dfs if df is not None]
 
     if not channel_dfs:
@@ -274,13 +268,15 @@ def download_emporia_data(email: str, password: str, start_date: Optional[str], 
         logging.info(f"Downloading data from {s_date} to {e_date} with {granularity} granularity.")
 
     output_config = load_output_config()
+    all_column_dfs = []
+    configured_devices = set()
 
     if output_config:
-        all_column_dfs = []
         for column_name, devices in output_config.items():
             logging.info(f"Processing column: {column_name}")
             column_channel_dfs = []
             for device_name, channels in devices.items():
+                configured_devices.add(device_name)
                 device = next((d for d in device_info.values() if d.device_name == device_name), None)
                 if not device:
                     logging.warning(f"Device '{device_name}' not found for column '{column_name}'. Skipping.")
@@ -289,61 +285,39 @@ def download_emporia_data(email: str, password: str, start_date: Optional[str], 
                 for channel_num in channels:
                     channel = next((c for c in device.channels if c.channel_num == str(channel_num)), None)
                     if channel:
-                        channel_df = fetch_channel_data(vue, device, channel, s_date, e_date, granularity)
+                        channel_df = fetch_channel_data(vue, channel, s_date, e_date, granularity)
                         if channel_df is not None:
-                            # Rename columns to be generic before aggregation
-                            usage_col = next((col for col in channel_df.columns if 'usage_kwh' in col), None)
-                            cost_col = next((col for col in channel_df.columns if 'cost_usd' in col), None)
-                            if usage_col and cost_col:
-                                channel_df.rename(columns={usage_col: 'usage_kwh', cost_col: 'cost_usd'}, inplace=True)
+                            generic_col = next((col for col in channel_df.columns if 'cost_usd' in col), None)
+                            if generic_col:
+                                channel_df.rename(columns={generic_col: 'cost_usd'}, inplace=True)
                                 column_channel_dfs.append(channel_df)
                     else:
                         logging.warning(f"Channel '{channel_num}' not found in device '{device_name}'. Skipping.")
             
             if column_channel_dfs:
-                # Merge all channel data for this column
                 merged_column_df = pd.concat(column_channel_dfs).groupby('instant').sum().reset_index()
-                # Rename aggregated columns to reflect the output column name
-                merged_column_df.rename(columns={'usage_kwh': f'{column_name}_usage_kwh', 'cost_usd': f'{column_name}_cost_usd'}, inplace=True)
+                merged_column_df.rename(columns={'cost_usd': f'{column_name}_cost_usd'}, inplace=True)
                 all_column_dfs.append(merged_column_df)
 
-        if all_column_dfs:
-            # Merge all column DataFrames into a single DataFrame
-            final_df = all_column_dfs[0]
-            for i in range(1, len(all_column_dfs)):
-                final_df = pd.merge(final_df, all_column_dfs[i], on='instant', how='outer')
-            save_data(final_df, s_date, output_folder)
-        else:
-            logging.warning("No data was downloaded for any configured output column.")
+    # Process remaining devices not in the output config
+    remaining_devices = [d for d in device_info.values() if d.device_name not in configured_devices]
+    for device in remaining_devices:
+        device_df = fetch_device_data(vue, device, s_date, e_date, granularity)
+        if device_df is not None:
+            cost_cols = [col for col in device_df.columns if 'cost_usd' in col]
+            device_df.set_index('instant', inplace=True)
+            device_df[f'{device.device_name}_cost_usd'] = device_df[cost_cols].sum(axis=1)
+            aggregated_df = device_df[[f'{device.device_name}_cost_usd']].reset_index()
+            all_column_dfs.append(aggregated_df)
+
+    if all_column_dfs:
+        # Merge all DataFrames into a single DataFrame
+        final_df = all_column_dfs[0]
+        for i in range(1, len(all_column_dfs)):
+            final_df = pd.merge(final_df, all_column_dfs[i], on='instant', how='outer')
+        save_data(final_df, s_date, output_folder)
     else:
-        # Default behavior: one column per device
-        all_device_dfs: List[pd.DataFrame] = []
-        for gid, device in device_info.items():
-            device_df = fetch_device_data(vue, device, s_date, e_date, granularity)
-            if device_df is not None:
-                # Sum up usage and cost across all channels for the device
-                usage_cols = [col for col in device_df.columns if 'usage_kwh' in col]
-                cost_cols = [col for col in device_df.columns if 'cost_usd' in col]
-                
-                # Ensure 'instant' is the index for summation
-                device_df.set_index('instant', inplace=True)
-
-                # Sum usage and cost columns
-                device_df[f'{device.device_name}_usage_kwh'] = device_df[usage_cols].sum(axis=1)
-                device_df[f'{device.device_name}_cost_usd'] = device_df[cost_cols].sum(axis=1)
-                
-                # Keep only the aggregated columns and reset index
-                aggregated_df = device_df[[f'{device.device_name}_usage_kwh', f'{device.device_name}_cost_usd']].reset_index()
-                all_device_dfs.append(aggregated_df)
-
-        if all_device_dfs:
-            # Merge all device DataFrames into a single DataFrame
-            final_df = all_device_dfs[0]
-            for i in range(1, len(all_device_dfs)):
-                final_df = pd.merge(final_df, all_device_dfs[i], on='instant', how='outer')
-            save_data(final_df, s_date, output_folder)
-        else:
-            logging.warning("No data was downloaded for any device.")
+        logging.warning("No data was downloaded for any device.")
 
 import yaml
 

@@ -128,8 +128,8 @@ class TestDownloadEmporiaData:
         self.mock_get_device_info.return_value = {123: mock_device}
 
         # Mock channel data fetching
-        df1 = pd.DataFrame({'instant': [datetime(2023, 1, 1)], 'channel_1_usage_kwh': [1.0], 'channel_1_cost_usd': [0.1]})
-        df2 = pd.DataFrame({'instant': [datetime(2023, 1, 1)], 'channel_2_usage_kwh': [2.0], 'channel_2_cost_usd': [0.2]})
+        df1 = pd.DataFrame({'instant': [datetime(2023, 1, 1)], 'channel_1_cost_usd': [0.1]})
+        df2 = pd.DataFrame({'instant': [datetime(2023, 1, 1)], 'channel_2_cost_usd': [0.2]})
         
         mock_fetch_channel = MagicMock(side_effect=[df1, df2])
         monkeypatch.setattr(download_data, 'fetch_channel_data', mock_fetch_channel)
@@ -140,9 +140,7 @@ class TestDownloadEmporiaData:
         self.mock_save.assert_called_once()
         saved_df = self.mock_save.call_args[0][0]
         
-        assert 'Custom Column_usage_kwh' in saved_df.columns
         assert 'Custom Column_cost_usd' in saved_df.columns
-        assert saved_df['Custom Column_usage_kwh'].iloc[0] == pytest.approx(3.0)  # 1.0 + 2.0
         assert saved_df['Custom Column_cost_usd'].iloc[0] == pytest.approx(0.3)   # 0.1 + 0.2
         self.mock_fetch_data.assert_not_called() # Ensure the old path is not taken
 
@@ -248,125 +246,25 @@ class TestFetchChannelData:
 
 
     def test_granularity_mapping(self, monkeypatch, granularity, expected_scale, expected_unit):
-
-
-
-
         """Test that granularity is correctly mapped to scale and time unit."""
-
-
-
-
         mock_vue = MagicMock()
-
-
-
-
-        mock_device = MagicMock()
-
-
-
-
-        mock_device.usage_cent_per_kw_hour = 15.0
-
-
-
-
         mock_channel = MagicMock()
-
-
-
-
         mock_channel.channel_num = '1'
-
-
-
-
         start_date = date(2023, 1, 1)
-
-
-
-
         end_date = date(2023, 1, 31)
 
-
-
-
-
-
-
-
-
         # Mock get_chart_usage to return some data
-
-
-
-
-        mock_vue.get_chart_usage.return_value = ([1000.0], datetime(2023, 1, 1))
-
-
-
-
+        mock_vue.get_chart_usage.return_value = ([0.15], datetime(2023, 1, 1))
         
-
-
-
-
-        df = download_data.fetch_channel_data(mock_vue, mock_device, mock_channel, start_date, end_date, granularity)
-
-
-
-
-
-
-
-
+        df = download_data.fetch_channel_data(mock_vue, mock_channel, start_date, end_date, granularity)
 
         mock_vue.get_chart_usage.assert_called_once()
-
-
-
-
         # Check that the scale argument is correct
-
-
-
-
         assert mock_vue.get_chart_usage.call_args[1]['scale'] == expected_scale
-
-
-
-
         # Check that the returned dataframe is not empty
-
-
-
-
         assert df is not None
-
-
-
-
         assert not df.empty
-
-
-
-
-        assert f'channel_1_usage_kwh' in df.columns
-
-
-
-
         assert f'channel_1_cost_usd' in df.columns
-
-
-
-
-        assert df[f'channel_1_usage_kwh'][0] == 1.0
-
-
-
-
         assert df[f'channel_1_cost_usd'][0] == 0.15
 
 
@@ -378,66 +276,17 @@ class TestFetchChannelData:
 
 
     def test_unsupported_granularity(self, monkeypatch):
-
-
-
-
         """Test that unsupported granularity returns None."""
-
-
-
-
         mock_vue = MagicMock()
-
-
-
-
-        mock_device = MagicMock()
-
-
-
-
         mock_channel = MagicMock()
-
-
-
-
         mock_channel.channel_num = '1'
-
-
-
-
         start_date = date(2023, 1, 1)
-
-
-
-
         end_date = date(2023, 1, 31)
-
-
-
-
         
-
-
-
-
-        df = download_data.fetch_channel_data(mock_vue, mock_device, mock_channel, start_date, end_date, "WEEKS")
-
-
-
-
-
-
-
-
+        df = download_data.fetch_channel_data(mock_vue, mock_channel, start_date, end_date, "WEEKS")
 
         assert df is None
-
-
-
-
-        mock_vue.get_chart_usage.assert_not_called()    
+        mock_vue.get_chart_usage.assert_not_called()
 
 
 
@@ -448,173 +297,36 @@ class TestFetchChannelData:
 
 
 def test_csv_output_header(tmp_path, monkeypatch):
-
-
-
-
     """Test that the output CSV file has the correct header."""
-
-
-
-
     mock_auth = MagicMock()
-
-
-
-
     mock_vue_instance = MagicMock()
-
-
-
-
     mock_auth.return_value = mock_vue_instance
-
-
-
-
     monkeypatch.setattr(download_data, 'authenticate', mock_auth)
 
-
-
-
-
-
-
-
-
     mock_device = MagicMock()
-
-
-
-
     mock_device.device_gid = 123
-
-
-
-
     mock_device.device_name = "Test Device"
-
-
-
-
-    mock_device.usage_cent_per_kw_hour = 15.0
-
-
-
-
     mock_channel = MagicMock()
-
-
-
-
     mock_channel.channel_num = '1'
-
-
-
-
     mock_device.channels = [mock_channel]
-
-
-
-
     mock_get_device_info = MagicMock(return_value={123: mock_device})
-
-
-
-
     monkeypatch.setattr(download_data, 'get_emporia_device_info', mock_get_device_info)
 
-
-
-
-
-
-
-
-
-    mock_vue_instance.get_chart_usage.return_value = ([1000.0, 2000.0], datetime(2023, 1, 1))
-
-
-
-
+    mock_vue_instance.get_chart_usage.return_value = ([0.15, 0.30], datetime(2023, 1, 1))
     
-
-
-
-
     # Mock get_last_month_dates to return a consistent date range
-
-
-
-
     mock_get_last_month = MagicMock(return_value=(date(2023, 1, 1), date(2023, 1, 31)))
-
-
-
-
     monkeypatch.setattr(download_data, 'get_last_month_dates', mock_get_last_month)
 
-
-
-
-
-
-
-
-
     # Mock load_output_config to return an empty dictionary for this test to ensure default behavior
-
-
-
-
     monkeypatch.setattr(download_data, 'load_output_config', MagicMock(return_value={}))
 
-
-
-
-
-
-
-
-
     output_folder = tmp_path / "emporia_data"
-
-
-
-
     download_data.download_emporia_data('test@example.com', 'password', None, None, 'DAY', output_folder=str(output_folder))
 
-
-
-
-
-
-
-
-
     csv_file_path = output_folder / "emporia_data_2023-01.csv"
-
-
-
-
     assert csv_file_path.exists()
 
-
-
-
-
-
-
-
-
     df = pd.read_csv(csv_file_path)
-
-
-
-
-    expected_headers = ['instant', 'Test Device_usage_kwh', 'Test Device_cost_usd']
-
-
-
-
+    expected_headers = ['instant', 'Test Device_cost_usd']
     assert list(df.columns) == expected_headers
