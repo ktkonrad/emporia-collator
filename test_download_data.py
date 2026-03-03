@@ -141,8 +141,8 @@ class TestDownloadEmporiaData:
         self.mock_fetch_channel_data.assert_not_called()
 
         saved_df = self.mock_save.call_args[0][0]
-        assert 'Test Device_cost_usd' in saved_df.columns
-        assert saved_df['Test Device_cost_usd'].iloc[0] == 0.1
+        assert 'Test Device' in saved_df.columns
+        assert saved_df['Test Device'].iloc[0] == 0.1
 
     def test_per_channel_output(self):
         """Test that per-channel output uses channel names."""
@@ -150,8 +150,8 @@ class TestDownloadEmporiaData:
             'email', 'pass', '2023-01-01', '2023-01-31', 'DAY', []
         )
         saved_df = self.mock_save.call_args[0][0]
-        assert 'Channel 1_cost_usd' in saved_df.columns
-        assert saved_df['Channel 1_cost_usd'].iloc[0] == 0.1
+        assert 'Channel 1' in saved_df.columns
+        assert saved_df['Channel 1'].iloc[0] == 0.1
 
 class TestFetchChannelData:
     @pytest.mark.parametrize("granularity, expected_scale, expected_unit", [
@@ -226,7 +226,7 @@ def test_csv_output_header_aggregated(tmp_path, monkeypatch):
     assert csv_file_path.exists()
 
     df = pd.read_csv(csv_file_path)
-    expected_headers = ['instant', 'Test Device_cost_usd']
+    expected_headers = ['instant', 'Test Device']
     assert list(df.columns) == expected_headers
 
 def test_csv_output_header_per_channel(tmp_path, monkeypatch):
@@ -259,5 +259,5 @@ def test_csv_output_header_per_channel(tmp_path, monkeypatch):
     assert csv_file_path.exists()
 
     df = pd.read_csv(csv_file_path)
-    expected_headers = ['instant', 'Channel 1_cost_usd']
+    expected_headers = ['instant', 'Channel 1']
     assert list(df.columns) == expected_headers

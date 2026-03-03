@@ -228,8 +228,8 @@ def download_emporia_data(email: str, password: str, start_date: Optional[str], 
             if device_df is not None:
                 cost_cols = [col for col in device_df.columns if 'cost_usd' in col]
                 device_df.set_index('instant', inplace=True)
-                device_df[f'{device.device_name}_cost_usd'] = device_df[cost_cols].sum(axis=1)
-                aggregated_df = device_df[[f'{device.device_name}_cost_usd']].reset_index()
+                device_df[device.device_name] = device_df[cost_cols].sum(axis=1)
+                aggregated_df = device_df[[device.device_name]].reset_index()
                 all_column_dfs.append(aggregated_df)
         else:
             logging.info(f"Processing device (per-channel): {device.device_name}")
@@ -238,7 +238,7 @@ def download_emporia_data(email: str, password: str, start_date: Optional[str], 
                 if channel_df is not None:
                     generic_col = next((col for col in channel_df.columns if 'cost_usd' in col), None)
                     if generic_col:
-                        channel_df.rename(columns={generic_col: f'{channel.name}_cost_usd'}, inplace=True)
+                        channel_df.rename(columns={generic_col: channel.name}, inplace=True)
                         all_column_dfs.append(channel_df)
 
     if all_column_dfs:
