@@ -123,16 +123,15 @@ def fetch_channel_data(vue: PyEmVue, channel: Any, start_date: date, end_date: d
         )
 
         if usage_data:
-            # Filter out None values from usage_data
-            filtered_usage_data = [val for val in usage_data if val is not None]
-            if not filtered_usage_data:
+            # Check if there is any data (not just None)
+            if all(val is None for val in usage_data):
                 logging.warning(f"  No valid usage data returned for channel {channel.name}")
                 return None
 
-            timestamps = pd.to_datetime(start_time) + pd.to_timedelta(range(len(filtered_usage_data)), unit=time_unit)
+            timestamps = pd.to_datetime(start_time) + pd.to_timedelta(range(len(usage_data)), unit=time_unit)
             return pd.DataFrame({
                 'instant': timestamps,
-                f'channel_{channel.channel_num}_cost_usd': filtered_usage_data
+                f'channel_{channel.channel_num}_cost_usd': usage_data
             })
         else:
             logging.warning(f"  No data returned for channel {channel.name}")

@@ -196,6 +196,30 @@ class TestFetchChannelData:
         assert df is None
         mock_vue.get_chart_usage.assert_not_called()
 
+    def test_missing_data_no_collapse(self, monkeypatch):
+        """Test that missing data (None values) doesn't cause the output to collapse."""
+        mock_vue = MagicMock()
+        mock_channel = MagicMock()
+        mock_channel.channel_num = '1'
+        mock_channel.name = "Test Channel"
+        start_date = date(2026, 2, 1)
+        end_date = date(2026, 2, 28)
+        
+        usage_data = [0.1, None, 0.2]
+        start_time = datetime(2026, 2, 1)
+        mock_vue.get_chart_usage.return_value = (usage_data, start_time)
+        
+        df = download_data.fetch_channel_data(mock_vue, mock_channel, start_date, end_date, "DAY")
+        
+        assert df is not None
+        assert len(df) == 3
+        assert df['instant'].iloc[0] == pd.Timestamp('2026-02-01')
+        assert df['instant'].iloc[1] == pd.Timestamp('2026-02-02')
+        assert df['instant'].iloc[2] == pd.Timestamp('2026-02-03')
+        assert df['channel_1_cost_usd'].iloc[0] == 0.1
+        assert pd.isna(df['channel_1_cost_usd'].iloc[1])
+        assert df['channel_1_cost_usd'].iloc[2] == 0.2
+
 def test_csv_output_header_aggregated(tmp_path, monkeypatch):
     """Test that the output CSV file has the correct header when aggregated."""
     mock_auth = MagicMock()
