@@ -141,7 +141,9 @@ class TestDownloadEmporiaData:
         self.mock_fetch_channel_data.assert_not_called()
 
         saved_df = self.mock_save.call_args[0][0]
+        assert 'period' in saved_df.columns
         assert 'Test Device' in saved_df.columns
+        assert len(saved_df) == 1
         assert saved_df['Test Device'].iloc[0] == 0.1
 
     def test_per_channel_output(self):
@@ -150,7 +152,9 @@ class TestDownloadEmporiaData:
             'email', 'pass', '2023-01-01', '2023-01-31', 'DAY', []
         )
         saved_df = self.mock_save.call_args[0][0]
+        assert 'period' in saved_df.columns
         assert 'Channel 1' in saved_df.columns
+        assert len(saved_df) == 1
         assert saved_df['Channel 1'].iloc[0] == 0.1
 
 class TestFetchChannelData:
@@ -250,8 +254,10 @@ def test_csv_output_header_aggregated(tmp_path, monkeypatch):
     assert csv_file_path.exists()
 
     df = pd.read_csv(csv_file_path)
-    expected_headers = ['instant', 'Test Device']
+    expected_headers = ['period', 'Test Device']
     assert list(df.columns) == expected_headers
+    assert len(df) == 1
+    assert df['period'].iloc[0] == "2023-01-01 to 2023-01-31"
 
 def test_csv_output_header_per_channel(tmp_path, monkeypatch):
     """Test that the output CSV file has the correct header when per-channel."""
@@ -283,5 +289,7 @@ def test_csv_output_header_per_channel(tmp_path, monkeypatch):
     assert csv_file_path.exists()
 
     df = pd.read_csv(csv_file_path)
-    expected_headers = ['instant', 'Channel 1']
+    expected_headers = ['period', 'Channel 1']
     assert list(df.columns) == expected_headers
+    assert len(df) == 1
+    assert df['period'].iloc[0] == "2023-01-01 to 2023-01-31"

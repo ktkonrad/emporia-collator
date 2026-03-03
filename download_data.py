@@ -245,7 +245,19 @@ def download_emporia_data(email: str, password: str, start_date: Optional[str], 
         final_df = all_column_dfs[0]
         for i in range(1, len(all_column_dfs)):
             final_df = pd.merge(final_df, all_column_dfs[i], on='instant', how='outer')
-        save_data(final_df, s_date, output_folder)
+        
+        # Calculate totals for the entire period
+        # Exclude 'instant' from the sum by selecting only numeric columns
+        numeric_cols = [col for col in final_df.columns if col != 'instant']
+        totals = final_df[numeric_cols].sum()
+        
+        # Create a single-row DataFrame for the totals
+        totals_df = pd.DataFrame([totals])
+        # Add the period as the first column
+        period_str = f"{s_date.strftime('%Y-%m-%d')} to {e_date.strftime('%Y-%m-%d')}"
+        totals_df.insert(0, 'period', period_str)
+        
+        save_data(totals_df, s_date, output_folder)
     else:
         logging.warning("No data was downloaded for any device.")
 
