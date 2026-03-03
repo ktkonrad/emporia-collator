@@ -189,57 +189,8 @@ def save_data(df: pd.DataFrame, start_date: date, output_folder: str):
     df.to_csv(filename, index=False)
     logging.info(f"Successfully saved device data to {filename}")
 
-def load_output_config(config_file: str = 'config.yaml') -> Dict[str, Dict[str, List[int]]]:
-    """
-    Loads the output column configuration from the YAML config file.
 
-    Args:
-        config_file (str): Path to the config file.
-
-    Returns:
-        Dict[str, Dict[str, List[int]]]: A dictionary where keys are column names
-                                          and values are dictionaries mapping device names
-                                          to lists of channel numbers.
-    """
-    if not os.path.exists(config_file):
-        return {}
-
-    with open(config_file, 'r') as f:
-        try:
-            config = yaml.safe_load(f)
-        except yaml.YAMLError as e:
-            logging.error(f"Error parsing YAML file: {e}")
-            return {}
-
-    output_config = {}
-    if 'output' in config and config['output']:
-        for column in config['output']:
-            column_name = column.get('name')
-            if not column_name:
-                logging.warning("Skipping output column with no name.")
-                continue
-
-            device_channels = {}
-            if 'devices' in column and column['devices']:
-                for device in column['devices']:
-                    device_name = device.get('name')
-                    channels = device.get('channels')
-                    if device_name and channels:
-                        # Filter out non-integer channel values
-                        valid_channels = []
-                        for c in channels:
-                            try:
-                                valid_channels.append(int(c))
-                            except (ValueError, TypeError):
-                                logging.warning(f"Skipping invalid channel value '{c}' for device '{device_name}' in column '{column_name}'.")
-                        if valid_channels:
-                            device_channels[device_name] = valid_channels
-            output_config[column_name] = device_channels
-
-    return output_config
-
-
-def download_emporia_data(email: str, password: str, start_date: Optional[str], end_date: Optional[str], granularity: str, output_folder: str = 'emporia_data'):
+def download_emporia_data(email: str, password: str, start_date: Optional[str], end_date: Optional[str], granularity: str, aggregate_devices: List[str], output_folder: str = 'emporia_data'):
     """
     Orchestrates the download of Emporia data with configurable granularity into a single CSV file.
 
@@ -249,6 +200,7 @@ def download_emporia_data(email: str, password: str, start_date: Optional[str], 
         start_date (Optional[str]): The start date for the data fetch.
         end_date (Optional[str]): The end date for the data fetch.
         granularity (str): The granularity of the data.
+        aggregate_devices (List[str]): List of device names to aggregate channels for.
         output_folder (str, optional): The folder to save data. Defaults to 'emporia_data'.
     """
     vue = authenticate(email, password)
@@ -267,48 +219,27 @@ def download_emporia_data(email: str, password: str, start_date: Optional[str], 
         s_date, e_date = get_last_month_dates()
         logging.info(f"Downloading data from {s_date} to {e_date} with {granularity} granularity.")
 
-    output_config = load_output_config()
     all_column_dfs = []
-    configured_devices = set()
 
-    if output_config:
-        for column_name, devices in output_config.items():
-            logging.info(f"Processing column: {column_name}")
-            column_channel_dfs = []
-            for device_name, channels in devices.items():
-                configured_devices.add(device_name)
-                device = next((d for d in device_info.values() if d.device_name == device_name), None)
-                if not device:
-                    logging.warning(f"Device '{device_name}' not found for column '{column_name}'. Skipping.")
-                    continue
-                
-                for channel_num in channels:
-                    channel = next((c for c in device.channels if c.channel_num == str(channel_num)), None)
-                    if channel:
-                        channel_df = fetch_channel_data(vue, channel, s_date, e_date, granularity)
-                        if channel_df is not None:
-                            generic_col = next((col for col in channel_df.columns if 'cost_usd' in col), None)
-                            if generic_col:
-                                channel_df.rename(columns={generic_col: 'cost_usd'}, inplace=True)
-                                column_channel_dfs.append(channel_df)
-                    else:
-                        logging.warning(f"Channel '{channel_num}' not found in device '{device_name}'. Skipping.")
-            
-            if column_channel_dfs:
-                merged_column_df = pd.concat(column_channel_dfs).groupby('instant').sum().reset_index()
-                merged_column_df.rename(columns={'cost_usd': f'{column_name}_cost_usd'}, inplace=True)
-                all_column_dfs.append(merged_column_df)
-
-    # Process remaining devices not in the output config
-    remaining_devices = [d for d in device_info.values() if d.device_name not in configured_devices]
-    for device in remaining_devices:
-        device_df = fetch_device_data(vue, device, s_date, e_date, granularity)
-        if device_df is not None:
-            cost_cols = [col for col in device_df.columns if 'cost_usd' in col]
-            device_df.set_index('instant', inplace=True)
-            device_df[f'{device.device_name}_cost_usd'] = device_df[cost_cols].sum(axis=1)
-            aggregated_df = device_df[[f'{device.device_name}_cost_usd']].reset_index()
-            all_column_dfs.append(aggregated_df)
+    for device in device_info.values():
+        if device.device_name in aggregate_devices:
+            logging.info(f"Processing device (aggregated): {device.device_name}")
+            device_df = fetch_device_data(vue, device, s_date, e_date, granularity)
+            if device_df is not None:
+                cost_cols = [col for col in device_df.columns if 'cost_usd' in col]
+                device_df.set_index('instant', inplace=True)
+                device_df[f'{device.device_name}_cost_usd'] = device_df[cost_cols].sum(axis=1)
+                aggregated_df = device_df[[f'{device.device_name}_cost_usd']].reset_index()
+                all_column_dfs.append(aggregated_df)
+        else:
+            logging.info(f"Processing device (per-channel): {device.device_name}")
+            for channel in device.channels:
+                channel_df = fetch_channel_data(vue, channel, s_date, e_date, granularity)
+                if channel_df is not None:
+                    generic_col = next((col for col in channel_df.columns if 'cost_usd' in col), None)
+                    if generic_col:
+                        channel_df.rename(columns={generic_col: f'{channel.name}_cost_usd'}, inplace=True)
+                        all_column_dfs.append(channel_df)
 
     if all_column_dfs:
         # Merge all DataFrames into a single DataFrame
@@ -318,6 +249,7 @@ def download_emporia_data(email: str, password: str, start_date: Optional[str], 
         save_data(final_df, s_date, output_folder)
     else:
         logging.warning("No data was downloaded for any device.")
+
 
 import yaml
 
@@ -355,7 +287,8 @@ def load_config(config_file: str = 'config.yaml') -> Optional[Dict[str, Any]]:
             'password': credentials.get('password'),
             'start_date': start_date_obj.strftime('%Y-%m-%d') if isinstance(start_date_obj, date) else start_date_obj,
             'end_date': end_date_obj.strftime('%Y-%m-%d') if isinstance(end_date_obj, date) else end_date_obj,
-            'granularity': data_config.get('granularity', 'DAY').upper()
+            'granularity': data_config.get('granularity', 'DAY').upper(),
+            'aggregate_devices': config.get('aggregate_devices', [])
         }
     except KeyError:
         logging.error("Error: 'credentials' section with 'username' and 'password' not found in config.yaml.")
@@ -386,7 +319,8 @@ def main():
             password=config['password'],
             start_date=config['start_date'],
             end_date=config['end_date'],
-            granularity=config['granularity']
+            granularity=config['granularity'],
+            aggregate_devices=config['aggregate_devices']
         )
 
 if __name__ == '__main__':
