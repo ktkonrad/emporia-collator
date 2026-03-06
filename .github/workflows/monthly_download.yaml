@@ -2,8 +2,8 @@ name: Monthly Emporia Data Download
 
 on:
   schedule:
-    # Runs at 00:00 UTC on day 27 of every month
-    - cron: '0 0 27 * *'
+    # Runs at 12:00 UTC (4:00 AM / 5:00 AM California time) on the 27th
+    - cron: '0 12 27 * *'
   workflow_dispatch: # Allows manual triggering from the Actions tab
 
 jobs:
