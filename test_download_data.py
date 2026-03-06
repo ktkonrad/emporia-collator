@@ -17,6 +17,37 @@ def mock_config_file(tmp_path):
         return config_path
     return _create_config
 
+class TestGetDefaultDates:
+    def test_get_default_dates_after_26th(self, monkeypatch):
+        """Test logic when today is after the 26th (e.g., March 27)."""
+        mock_date = MagicMock()
+        mock_date.today.return_value = date(2026, 3, 27)
+        monkeypatch.setattr(download_data, 'date', mock_date)
+        
+        s_date, e_date = download_data.get_default_dates()
+        assert s_date == date(2026, 2, 27)
+        assert e_date == date(2026, 3, 26)
+
+    def test_get_default_dates_before_26th(self, monkeypatch):
+        """Test logic when today is before the 26th (e.g., March 5)."""
+        mock_date = MagicMock()
+        mock_date.today.return_value = date(2026, 3, 5)
+        monkeypatch.setattr(download_data, 'date', mock_date)
+        
+        s_date, e_date = download_data.get_default_dates()
+        assert s_date == date(2026, 1, 27)
+        assert e_date == date(2026, 2, 26)
+
+    def test_get_default_dates_on_26th(self, monkeypatch):
+        """Test logic when today is the 26th."""
+        mock_date = MagicMock()
+        mock_date.today.return_value = date(2026, 3, 26)
+        monkeypatch.setattr(download_data, 'date', mock_date)
+        
+        s_date, e_date = download_data.get_default_dates()
+        assert s_date == date(2026, 2, 27)
+        assert e_date == date(2026, 3, 26)
+
 class TestLoadConfig:
     def test_load_full_config(self, mock_config_file):
         """Test loading a complete config file."""
@@ -115,15 +146,15 @@ class TestDownloadEmporiaData:
         self.mock_save = MagicMock()
         monkeypatch.setattr(download_data, 'save_data', self.mock_save)
 
-        self.mock_get_last_month = MagicMock(return_value=(date(2023, 1, 1), date(2023, 1, 31)))
-        monkeypatch.setattr(download_data, 'get_last_month_dates', self.mock_get_last_month)
+        self.mock_get_default_dates = MagicMock(return_value=(date(2023, 1, 27), date(2023, 2, 26)))
+        monkeypatch.setattr(download_data, 'get_default_dates', self.mock_get_default_dates)
 
     def test_with_provided_dates_per_channel(self):
         """Test that provided start and end dates are used with per-channel default."""
         download_data.download_emporia_data(
             'email', 'pass', '2023-02-01', '2023-02-28', 'HOUR', []
         )
-        self.mock_get_last_month.assert_not_called()
+        self.mock_get_default_dates.assert_not_called()
         expected_start = date(2023, 2, 1)
         expected_end = date(2023, 2, 28)
         self.mock_fetch_channel_data.assert_called_once_with(
@@ -265,9 +296,9 @@ def test_csv_output_header_aggregated(tmp_path, monkeypatch):
         ([0.75, 1.50], datetime(2023, 1, 1))  # kWh
     ]
     
-    # Mock get_last_month_dates to return a consistent date range
-    mock_get_last_month = MagicMock(return_value=(date(2023, 1, 1), date(2023, 1, 31)))
-    monkeypatch.setattr(download_data, 'get_last_month_dates', mock_get_last_month)
+    # Mock get_default_dates to return a consistent date range
+    mock_get_default_dates = MagicMock(return_value=(date(2023, 1, 27), date(2023, 2, 26)))
+    monkeypatch.setattr(download_data, 'get_default_dates', mock_get_default_dates)
 
     output_folder = tmp_path / "emporia_data"
     download_data.download_emporia_data('test@example.com', 'password', None, None, 'DAY', ["Test Device"], output_folder=str(output_folder))
@@ -279,7 +310,7 @@ def test_csv_output_header_aggregated(tmp_path, monkeypatch):
     expected_headers = ['period', 'Test Device (USD)', 'Test Device (kWh)']
     assert list(df.columns) == expected_headers
     assert len(df) == 1
-    assert df['period'].iloc[0] == "2023-01-01 to 2023-01-31"
+    assert df['period'].iloc[0] == "2023-01-27 to 2023-02-26"
     assert df['Test Device (USD)'].iloc[0] == pytest.approx(0.45)
     assert df['Test Device (kWh)'].iloc[0] == pytest.approx(2.25)
 
@@ -305,9 +336,9 @@ def test_csv_output_header_per_channel(tmp_path, monkeypatch):
         ([0.75, 1.50], datetime(2023, 1, 1))  # kWh
     ]
     
-    # Mock get_last_month_dates to return a consistent date range
-    mock_get_last_month = MagicMock(return_value=(date(2023, 1, 1), date(2023, 1, 31)))
-    monkeypatch.setattr(download_data, 'get_last_month_dates', mock_get_last_month)
+    # Mock get_default_dates to return a consistent date range
+    mock_get_default_dates = MagicMock(return_value=(date(2023, 1, 27), date(2023, 2, 26)))
+    monkeypatch.setattr(download_data, 'get_default_dates', mock_get_default_dates)
 
     output_folder = tmp_path / "emporia_data"
     download_data.download_emporia_data('test@example.com', 'password', None, None, 'DAY', [], output_folder=str(output_folder))
@@ -319,6 +350,6 @@ def test_csv_output_header_per_channel(tmp_path, monkeypatch):
     expected_headers = ['period', 'Channel 1 (USD)', 'Channel 1 (kWh)']
     assert list(df.columns) == expected_headers
     assert len(df) == 1
-    assert df['period'].iloc[0] == "2023-01-01 to 2023-01-31"
+    assert df['period'].iloc[0] == "2023-01-27 to 2023-02-26"
     assert df['Channel 1 (USD)'].iloc[0] == pytest.approx(0.45)
     assert df['Channel 1 (kWh)'].iloc[0] == pytest.approx(2.25)

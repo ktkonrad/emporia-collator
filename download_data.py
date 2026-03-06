@@ -18,18 +18,32 @@ def setup_logging(verbosity: str):
     level = getattr(logging, verbosity.upper(), logging.INFO)
     logging.basicConfig(level=level, format='%(levelname)s: %(message)s')
 
-def get_last_month_dates() -> Tuple[date, date]:
+def get_default_dates() -> Tuple[date, date]:
     """
-    Helper function to get the start and end dates for the previous calendar month.
+    Helper function to get the default start and end dates: 
+    27th of month before last to 26th of most recent month.
 
     Returns:
-        Tuple[date, date]: A tuple containing the first and last day of the previous month.
+        Tuple[date, date]: A tuple containing the start and end dates.
     """
     today = date.today()
-    first_day_of_current_month = today.replace(day=1)
-    last_day_of_last_month = first_day_of_current_month - timedelta(days=1)
-    first_day_of_last_month = last_day_of_last_month.replace(day=1)
-    return first_day_of_last_month, last_day_of_last_month
+    if today.day >= 26:
+        # Most recent 26th is in the current month
+        e_date = today.replace(day=26)
+        first_day_of_current_month = today.replace(day=1)
+        last_day_of_last_month = first_day_of_current_month - timedelta(days=1)
+        s_date = last_day_of_last_month.replace(day=27)
+    else:
+        # Most recent 26th was in the previous month
+        first_day_of_current_month = today.replace(day=1)
+        last_day_of_last_month = first_day_of_current_month - timedelta(days=1)
+        e_date = last_day_of_last_month.replace(day=26)
+        
+        first_day_of_last_month = last_day_of_last_month.replace(day=1)
+        last_day_of_month_before_last = first_day_of_last_month - timedelta(days=1)
+        s_date = last_day_of_month_before_last.replace(day=27)
+    
+    return s_date, e_date
 
 def authenticate(email: str, password: str) -> Optional[PyEmVue]:
     """
@@ -226,7 +240,7 @@ def download_emporia_data(email: str, password: str, start_date: Optional[str], 
         e_date = datetime.strptime(end_date, '%Y-%m-%d').date()
         logging.info(f"Downloading data from {s_date} to {e_date} with {granularity} granularity.")
     else:
-        s_date, e_date = get_last_month_dates()
+        s_date, e_date = get_default_dates()
         logging.info(f"Downloading data from {s_date} to {e_date} with {granularity} granularity.")
 
     all_column_dfs = []
