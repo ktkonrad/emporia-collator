@@ -1,4 +1,5 @@
 import os
+import sys
 import pandas as pd
 from datetime import datetime, date, timedelta
 from pyemvue import PyEmVue
@@ -199,7 +200,7 @@ def fetch_device_data(vue: PyEmVue, device: Any, start_date: date, end_date: dat
     df['device_name'] = device.device_name
     return df
 
-def save_to_google_sheet(df: pd.DataFrame, sheet_url: str, service_account_file: str):
+def save_to_google_sheet(df: pd.DataFrame, sheet_url: str, service_account_file: str) -> bool:
     """
     Appends the provided DataFrame as a new row to a Google Sheet.
 
@@ -207,10 +208,13 @@ def save_to_google_sheet(df: pd.DataFrame, sheet_url: str, service_account_file:
         df (pd.DataFrame): The single-row DataFrame (totals) to append.
         sheet_url (str): The URL of the Google Sheet.
         service_account_file (str): Path to the Google service account JSON file.
+
+    Returns:
+        bool: True if successful, False otherwise.
     """
     if not os.path.exists(service_account_file):
         logging.error(f"Google service account file not found: {service_account_file}")
-        return
+        return False
 
     try:
         scope = ['https://www.googleapis.com/auth/spreadsheets']
@@ -265,15 +269,17 @@ def save_to_google_sheet(df: pd.DataFrame, sheet_url: str, service_account_file:
                             error_msg += f"    - At index {i}: expected '{h1}', found '{h2}'\n"
                 
                 logging.error(error_msg)
-                return
+                return False
         
         # Append the row
         row_to_append = df.iloc[0].tolist()
         worksheet.append_row([str(val) if not isinstance(val, (int, float)) else val for val in row_to_append])
         logging.info("Successfully appended data to Google Sheet.")
+        return True
         
     except Exception as e:
         logging.error(f"Error saving to Google Sheet: {e}")
+        return False
 
 
 def save_data(df: pd.DataFrame, reference_date: date, output_folder: str):
@@ -294,7 +300,7 @@ def save_data(df: pd.DataFrame, reference_date: date, output_folder: str):
     logging.info(f"Successfully saved device data to {filename}")
 
 
-def download_emporia_data(email: str, password: str, start_date: Optional[str], end_date: Optional[str], granularity: str, aggregate_devices: List[str], output_folder: str = 'emporia_data', google_sheet_url: Optional[str] = None, service_account_file: Optional[str] = None):
+def download_emporia_data(email: str, password: str, start_date: Optional[str], end_date: Optional[str], granularity: str, aggregate_devices: List[str], output_folder: str = 'emporia_data', google_sheet_url: Optional[str] = None, service_account_file: Optional[str] = None) -> bool:
     """
     Orchestrates the download of Emporia data with configurable granularity into a single CSV file and optionally a Google Sheet.
 
@@ -308,14 +314,17 @@ def download_emporia_data(email: str, password: str, start_date: Optional[str], 
         output_folder (str, optional): The folder to save data. Defaults to 'emporia_data'.
         google_sheet_url (str, optional): The URL of the Google Sheet to append to.
         service_account_file (str, optional): Path to the Google service account file.
+
+    Returns:
+        bool: True if successful, False otherwise.
     """
     vue = authenticate(email, password)
     if not vue:
-        return
+        return False
 
     device_info = get_emporia_device_info(vue)
     if not device_info:
-        return
+        return False
 
     if start_date and end_date:
         s_date = datetime.strptime(start_date, '%Y-%m-%d').date()
@@ -376,10 +385,13 @@ def download_emporia_data(email: str, password: str, start_date: Optional[str], 
         # Always save CSV, using the month of the end date
         save_data(totals_df, e_date, output_folder)
         
+        success = True
         if google_sheet_url and service_account_file:
-            save_to_google_sheet(totals_df, google_sheet_url, service_account_file)
+            success = save_to_google_sheet(totals_df, google_sheet_url, service_account_file)
+        return success
     else:
         logging.warning("No data was downloaded for any device.")
+        return False
 
 
 import argparse
@@ -433,30 +445,35 @@ def load_config(config_file: str = 'config.yaml') -> Optional[Dict[str, Any]]:
 
     return settings
 
-def main():
+def main(args=None):
     """Main function to run the data download process."""
     parser = argparse.ArgumentParser(description='Download Emporia Energy data.')
     parser.add_argument('-v', '--verbose', action='store_const', dest='verbosity', const='DEBUG',
                         help='Enable verbose logging (DEBUG level).')
     parser.add_argument('-q', '--quiet', action='store_const', dest='verbosity', const='WARNING',
                         help='Enable quiet logging (WARNING level).')
-    args = parser.parse_args()
+    parsed_args = parser.parse_args(args)
 
     # Default to INFO level if no verbosity flag is set
-    setup_logging(args.verbosity or 'INFO')
+    setup_logging(parsed_args.verbosity or 'INFO')
 
     config = load_config()
-    if config:
-        download_emporia_data(
-            email=config['email'],
-            password=config['password'],
-            start_date=config['start_date'],
-            end_date=config['end_date'],
-            granularity=config['granularity'],
-            aggregate_devices=config['aggregate_devices'],
-            google_sheet_url=config.get('google_sheet_url'),
-            service_account_file=config.get('service_account_file')
-        )
+    if not config:
+        sys.exit(1)
+        
+    success = download_emporia_data(
+        email=config['email'],
+        password=config['password'],
+        start_date=config['start_date'],
+        end_date=config['end_date'],
+        granularity=config['granularity'],
+        aggregate_devices=config['aggregate_devices'],
+        google_sheet_url=config.get('google_sheet_url'),
+        service_account_file=config.get('service_account_file')
+    )
+    
+    if not success:
+        sys.exit(1)
 
 if __name__ == '__main__':
     main()
