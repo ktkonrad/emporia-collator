@@ -1,0 +1,51 @@
+name: Monthly Emporia Data Download
+
+on:
+  schedule:
+    # Runs at 00:00 UTC on day 27 of every month
+    - cron: '0 0 27 * *'
+  workflow_dispatch: # Allows manual triggering from the Actions tab
+
+jobs:
+  run-download:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Create service-account.json
+        run: |
+          echo "${{ secrets.GCP_SERVICE_ACCOUNT }}" | base64 --decode > service-account.json
+
+      - name: Create config.yaml
+        run: |
+          cat <<EOF > config.yaml
+          credentials:
+            username: "$USER"
+            password: "$PASS"
+          data:
+            granularity: DAY
+          aggregate_devices:
+            - "Amador Yurt"
+            - "The Toad"
+            - "The Big Yurt"
+            - "Singing Pines Hub"
+            - "Small Cabin Hub"
+          google_sheets:
+            service_account_file: "service-account.json"
+          EOF
+        env:
+          USER: ${{ secrets.EMPORIA_USERNAME }}
+          PASS: ${{ secrets.EMPORIA_PASSWORD }}
+
+      - name: Run script
+        run: python download_data.py
