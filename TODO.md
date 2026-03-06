@@ -1,4 +1,4 @@
-- [ ] Output two columns for each output, one in USD and one in KWh
+- [x] Output two columns for each output, one in USD and one in KWh
 - [ ] Default output period to be 26th of last month to 26th of current month
 - [ ] Optional: add output option to write directly to a google sheet, appending a row for the current month. Use this sheet https://docs.google.com/spreadsheets/d/1maoCrZuzxQJB8beHq6o9_677UvjJ1khtWLITaRIT_iE/edit?gid=141030202#gid=141030202
 - [ ] Look into automatically running the script via github actions or something on the 27th of each month

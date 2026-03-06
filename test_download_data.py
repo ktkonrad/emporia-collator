@@ -100,13 +100,15 @@ class TestDownloadEmporiaData:
 
         self.mock_fetch_device_data = MagicMock(return_value=pd.DataFrame({
             'instant': [datetime(2023, 1, 1)], 
-            'channel_1_cost_usd': [0.1]
+            'channel_1_cost_usd': [0.1],
+            'channel_1_usage_kwh': [0.5]
         }))
         monkeypatch.setattr(download_data, 'fetch_device_data', self.mock_fetch_device_data)
 
         self.mock_fetch_channel_data = MagicMock(return_value=pd.DataFrame({
             'instant': [datetime(2023, 1, 1)], 
-            'channel_1_cost_usd': [0.1]
+            'channel_1_cost_usd': [0.1],
+            'channel_1_usage_kwh': [0.5]
         }))
         monkeypatch.setattr(download_data, 'fetch_channel_data', self.mock_fetch_channel_data)
 
@@ -142,9 +144,11 @@ class TestDownloadEmporiaData:
 
         saved_df = self.mock_save.call_args[0][0]
         assert 'period' in saved_df.columns
-        assert 'Test Device' in saved_df.columns
+        assert 'Test Device (USD)' in saved_df.columns
+        assert 'Test Device (kWh)' in saved_df.columns
         assert len(saved_df) == 1
-        assert saved_df['Test Device'].iloc[0] == 0.1
+        assert saved_df['Test Device (USD)'].iloc[0] == 0.1
+        assert saved_df['Test Device (kWh)'].iloc[0] == 0.5
 
     def test_per_channel_output(self):
         """Test that per-channel output uses channel names."""
@@ -153,9 +157,11 @@ class TestDownloadEmporiaData:
         )
         saved_df = self.mock_save.call_args[0][0]
         assert 'period' in saved_df.columns
-        assert 'Channel 1' in saved_df.columns
+        assert 'Channel 1 (USD)' in saved_df.columns
+        assert 'Channel 1 (kWh)' in saved_df.columns
         assert len(saved_df) == 1
-        assert saved_df['Channel 1'].iloc[0] == 0.1
+        assert saved_df['Channel 1 (USD)'].iloc[0] == 0.1
+        assert saved_df['Channel 1 (kWh)'].iloc[0] == 0.5
 
 class TestFetchChannelData:
     @pytest.mark.parametrize("granularity, expected_scale, expected_unit", [
@@ -173,18 +179,24 @@ class TestFetchChannelData:
         end_date = date(2023, 1, 31)
 
         # Mock get_chart_usage to return some data
-        mock_vue.get_chart_usage.return_value = ([0.15], datetime(2023, 1, 1))
+        mock_vue.get_chart_usage.side_effect = [
+            ([0.15], datetime(2023, 1, 1)), # USD
+            ([0.75], datetime(2023, 1, 1))  # kWh
+        ]
         
         df = download_data.fetch_channel_data(mock_vue, mock_channel, start_date, end_date, granularity)
 
-        mock_vue.get_chart_usage.assert_called_once()
+        assert mock_vue.get_chart_usage.call_count == 2
         # Check that the scale argument is correct
-        assert mock_vue.get_chart_usage.call_args[1]['scale'] == expected_scale
+        assert mock_vue.get_chart_usage.call_args_list[0][1]['scale'] == expected_scale
+        assert mock_vue.get_chart_usage.call_args_list[1][1]['scale'] == expected_scale
         # Check that the returned dataframe is not empty
         assert df is not None
         assert not df.empty
         assert f'channel_1_cost_usd' in df.columns
+        assert f'channel_1_usage_kwh' in df.columns
         assert df[f'channel_1_cost_usd'][0] == 0.15
+        assert df[f'channel_1_usage_kwh'][0] == 0.75
 
     def test_unsupported_granularity(self, monkeypatch):
         """Test that unsupported granularity returns None."""
@@ -209,9 +221,13 @@ class TestFetchChannelData:
         start_date = date(2026, 2, 1)
         end_date = date(2026, 2, 28)
         
-        usage_data = [0.1, None, 0.2]
+        usage_usd = [0.1, None, 0.2]
+        usage_kwh = [0.5, None, 1.0]
         start_time = datetime(2026, 2, 1)
-        mock_vue.get_chart_usage.return_value = (usage_data, start_time)
+        mock_vue.get_chart_usage.side_effect = [
+            (usage_usd, start_time),
+            (usage_kwh, start_time)
+        ]
         
         df = download_data.fetch_channel_data(mock_vue, mock_channel, start_date, end_date, "DAY")
         
@@ -223,6 +239,9 @@ class TestFetchChannelData:
         assert df['channel_1_cost_usd'].iloc[0] == 0.1
         assert pd.isna(df['channel_1_cost_usd'].iloc[1])
         assert df['channel_1_cost_usd'].iloc[2] == 0.2
+        assert df['channel_1_usage_kwh'].iloc[0] == 0.5
+        assert pd.isna(df['channel_1_usage_kwh'].iloc[1])
+        assert df['channel_1_usage_kwh'].iloc[2] == 1.0
 
 def test_csv_output_header_aggregated(tmp_path, monkeypatch):
     """Test that the output CSV file has the correct header when aggregated."""
@@ -241,7 +260,10 @@ def test_csv_output_header_aggregated(tmp_path, monkeypatch):
     mock_get_device_info = MagicMock(return_value={123: mock_device})
     monkeypatch.setattr(download_data, 'get_emporia_device_info', mock_get_device_info)
 
-    mock_vue_instance.get_chart_usage.return_value = ([0.15, 0.30], datetime(2023, 1, 1))
+    mock_vue_instance.get_chart_usage.side_effect = [
+        ([0.15, 0.30], datetime(2023, 1, 1)), # USD
+        ([0.75, 1.50], datetime(2023, 1, 1))  # kWh
+    ]
     
     # Mock get_last_month_dates to return a consistent date range
     mock_get_last_month = MagicMock(return_value=(date(2023, 1, 1), date(2023, 1, 31)))
@@ -254,10 +276,12 @@ def test_csv_output_header_aggregated(tmp_path, monkeypatch):
     assert csv_file_path.exists()
 
     df = pd.read_csv(csv_file_path)
-    expected_headers = ['period', 'Test Device']
+    expected_headers = ['period', 'Test Device (USD)', 'Test Device (kWh)']
     assert list(df.columns) == expected_headers
     assert len(df) == 1
     assert df['period'].iloc[0] == "2023-01-01 to 2023-01-31"
+    assert df['Test Device (USD)'].iloc[0] == pytest.approx(0.45)
+    assert df['Test Device (kWh)'].iloc[0] == pytest.approx(2.25)
 
 def test_csv_output_header_per_channel(tmp_path, monkeypatch):
     """Test that the output CSV file has the correct header when per-channel."""
@@ -276,7 +300,10 @@ def test_csv_output_header_per_channel(tmp_path, monkeypatch):
     mock_get_device_info = MagicMock(return_value={123: mock_device})
     monkeypatch.setattr(download_data, 'get_emporia_device_info', mock_get_device_info)
 
-    mock_vue_instance.get_chart_usage.return_value = ([0.15, 0.30], datetime(2023, 1, 1))
+    mock_vue_instance.get_chart_usage.side_effect = [
+        ([0.15, 0.30], datetime(2023, 1, 1)), # USD
+        ([0.75, 1.50], datetime(2023, 1, 1))  # kWh
+    ]
     
     # Mock get_last_month_dates to return a consistent date range
     mock_get_last_month = MagicMock(return_value=(date(2023, 1, 1), date(2023, 1, 31)))
@@ -289,7 +316,9 @@ def test_csv_output_header_per_channel(tmp_path, monkeypatch):
     assert csv_file_path.exists()
 
     df = pd.read_csv(csv_file_path)
-    expected_headers = ['period', 'Channel 1']
+    expected_headers = ['period', 'Channel 1 (USD)', 'Channel 1 (kWh)']
     assert list(df.columns) == expected_headers
     assert len(df) == 1
     assert df['period'].iloc[0] == "2023-01-01 to 2023-01-31"
+    assert df['Channel 1 (USD)'].iloc[0] == pytest.approx(0.45)
+    assert df['Channel 1 (kWh)'].iloc[0] == pytest.approx(2.25)

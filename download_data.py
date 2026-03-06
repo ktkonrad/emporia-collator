@@ -114,7 +114,8 @@ def fetch_channel_data(vue: PyEmVue, channel: Any, start_date: date, end_date: d
     scale_value, time_unit = scale_map[granularity.upper()]
 
     try:
-        usage_data, start_time = vue.get_chart_usage(
+        # Fetch USD data
+        usage_usd, start_time_usd = vue.get_chart_usage(
             channel=channel,
             start=datetime.combine(start_date, datetime.min.time()),
             end=datetime.combine(end_date, datetime.max.time()).replace(second=0, microsecond=0),
@@ -122,16 +123,26 @@ def fetch_channel_data(vue: PyEmVue, channel: Any, start_date: date, end_date: d
             unit=Unit.USD.value
         )
 
-        if usage_data:
+        # Fetch kWh data
+        usage_kwh, start_time_kwh = vue.get_chart_usage(
+            channel=channel,
+            start=datetime.combine(start_date, datetime.min.time()),
+            end=datetime.combine(end_date, datetime.max.time()).replace(second=0, microsecond=0),
+            scale=scale_value,
+            unit=Unit.KWH.value
+        )
+
+        if usage_usd and usage_kwh:
             # Check if there is any data (not just None)
-            if all(val is None for val in usage_data):
+            if all(val is None for val in usage_usd) and all(val is None for val in usage_kwh):
                 logging.warning(f"  No valid usage data returned for channel {channel.name}")
                 return None
 
-            timestamps = pd.to_datetime(start_time) + pd.to_timedelta(range(len(usage_data)), unit=time_unit)
+            timestamps = pd.to_datetime(start_time_usd) + pd.to_timedelta(range(len(usage_usd)), unit=time_unit)
             return pd.DataFrame({
                 'instant': timestamps,
-                f'channel_{channel.channel_num}_cost_usd': usage_data
+                f'channel_{channel.channel_num}_cost_usd': usage_usd,
+                f'channel_{channel.channel_num}_usage_kwh': usage_kwh
             })
         else:
             logging.warning(f"  No data returned for channel {channel.name}")
@@ -226,18 +237,27 @@ def download_emporia_data(email: str, password: str, start_date: Optional[str], 
             device_df = fetch_device_data(vue, device, s_date, e_date, granularity)
             if device_df is not None:
                 cost_cols = [col for col in device_df.columns if 'cost_usd' in col]
+                usage_cols = [col for col in device_df.columns if 'usage_kwh' in col]
                 device_df.set_index('instant', inplace=True)
-                device_df[device.device_name] = device_df[cost_cols].sum(axis=1)
-                aggregated_df = device_df[[device.device_name]].reset_index()
+                device_df[f"{device.device_name} (USD)"] = device_df[cost_cols].sum(axis=1)
+                device_df[f"{device.device_name} (kWh)"] = device_df[usage_cols].sum(axis=1)
+                aggregated_df = device_df[[f"{device.device_name} (USD)", f"{device.device_name} (kWh)"]].reset_index()
                 all_column_dfs.append(aggregated_df)
         else:
             logging.info(f"Processing device (per-channel): {device.device_name}")
             for channel in device.channels:
                 channel_df = fetch_channel_data(vue, channel, s_date, e_date, granularity)
                 if channel_df is not None:
-                    generic_col = next((col for col in channel_df.columns if 'cost_usd' in col), None)
-                    if generic_col:
-                        channel_df.rename(columns={generic_col: channel.name}, inplace=True)
+                    usd_col = next((col for col in channel_df.columns if 'cost_usd' in col), None)
+                    kwh_col = next((col for col in channel_df.columns if 'usage_kwh' in col), None)
+                    rename_dict = {}
+                    if usd_col:
+                        rename_dict[usd_col] = f"{channel.name} (USD)"
+                    if kwh_col:
+                        rename_dict[kwh_col] = f"{channel.name} (kWh)"
+                    
+                    if rename_dict:
+                        channel_df.rename(columns=rename_dict, inplace=True)
                         all_column_dfs.append(channel_df)
 
     if all_column_dfs:
