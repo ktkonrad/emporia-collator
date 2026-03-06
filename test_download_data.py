@@ -385,7 +385,7 @@ def test_csv_output_header_aggregated(tmp_path, monkeypatch):
     output_folder = tmp_path / "emporia_data"
     download_data.download_emporia_data('test@example.com', 'password', None, None, 'DAY', ["Test Device"], output_folder=str(output_folder))
 
-    csv_file_path = output_folder / "emporia_data_2023-01.csv"
+    csv_file_path = output_folder / "emporia_data_2023-02.csv"
     assert csv_file_path.exists()
 
     df = pd.read_csv(csv_file_path)
@@ -425,7 +425,7 @@ def test_csv_output_header_per_channel(tmp_path, monkeypatch):
     output_folder = tmp_path / "emporia_data"
     download_data.download_emporia_data('test@example.com', 'password', None, None, 'DAY', [], output_folder=str(output_folder))
 
-    csv_file_path = output_folder / "emporia_data_2023-01.csv"
+    csv_file_path = output_folder / "emporia_data_2023-02.csv"
     assert csv_file_path.exists()
 
     df = pd.read_csv(csv_file_path)

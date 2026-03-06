@@ -276,20 +276,20 @@ def save_to_google_sheet(df: pd.DataFrame, sheet_url: str, service_account_file:
         logging.error(f"Error saving to Google Sheet: {e}")
 
 
-def save_data(df: pd.DataFrame, start_date: date, output_folder: str):
+def save_data(df: pd.DataFrame, reference_date: date, output_folder: str):
     """
     Saves the combined DataFrame to a single CSV file.
 
     Args:
         df (pd.DataFrame): The combined DataFrame to save.
-        start_date (date): The start date of the data period (for filename).
+        reference_date (date): The date to use for the filename (e.g., end date).
         output_folder (str): The folder to save the CSV in.
     """
     if not os.path.exists(output_folder):
         os.makedirs(output_folder)
         logging.info(f"Created output directory: {output_folder}")
 
-    filename = f"{output_folder}/emporia_data_{start_date.strftime('%Y-%m')}.csv"
+    filename = f"{output_folder}/emporia_data_{reference_date.strftime('%Y-%m')}.csv"
     df.to_csv(filename, index=False)
     logging.info(f"Successfully saved device data to {filename}")
 
@@ -373,7 +373,8 @@ def download_emporia_data(email: str, password: str, start_date: Optional[str], 
         period_str = f"{s_date.strftime('%Y-%m-%d')} to {e_date.strftime('%Y-%m-%d')}"
         totals_df.insert(0, 'period', period_str)
         
-        save_data(totals_df, s_date, output_folder)
+        # Always save CSV, using the month of the end date
+        save_data(totals_df, e_date, output_folder)
         
         if google_sheet_url and service_account_file:
             save_to_google_sheet(totals_df, google_sheet_url, service_account_file)
