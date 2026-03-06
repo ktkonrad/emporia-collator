@@ -121,7 +121,7 @@ def fetch_channel_data(vue: PyEmVue, channel: Any, start_date: date, end_date: d
     scale_map = {
         'MINUTE': (Scale.MINUTE.value, 'm'),
         'HOUR': (Scale.HOUR.value, 'h'),
-        'DAY': (Scale.DAY.value, 'd'),
+        'DAY': (Scale.DAY.value, 'D'),
     }
     
     if granularity.upper() not in scale_map:

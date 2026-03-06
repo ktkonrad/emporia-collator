@@ -280,7 +280,7 @@ class TestFetchChannelData:
     @pytest.mark.parametrize("granularity, expected_scale, expected_unit", [
         ("MINUTE", Scale.MINUTE.value, 'm'),
         ("HOUR", Scale.HOUR.value, 'h'),
-        ("DAY", Scale.DAY.value, 'd'),
+        ("DAY", Scale.DAY.value, 'D'),
     ])
     def test_granularity_mapping(self, monkeypatch, granularity, expected_scale, expected_unit):
         """Test that granularity is correctly mapped to scale and time unit."""
