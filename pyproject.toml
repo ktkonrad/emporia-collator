@@ -8,4 +8,6 @@ dependencies = [
     "pandas>=2.3.3",
     "pyemvue>=0.18.9",
     "pytest>=9.0.2",
+    "gspread>=6.1.0",
+    "google-auth>=2.29.0",
 ]

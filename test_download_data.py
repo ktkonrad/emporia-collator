@@ -194,6 +194,88 @@ class TestDownloadEmporiaData:
         assert saved_df['Channel 1 (USD)'].iloc[0] == 0.1
         assert saved_df['Channel 1 (kWh)'].iloc[0] == 0.5
 
+    def test_google_sheet_save_called(self, monkeypatch):
+        """Test that save_to_google_sheet is called if configured."""
+        mock_save_gsheet = MagicMock()
+        monkeypatch.setattr(download_data, 'save_to_google_sheet', mock_save_gsheet)
+        
+        download_data.download_emporia_data(
+            'email', 'pass', '2023-01-01', '2023-01-31', 'DAY', [],
+            google_sheet_url='http://sheet', service_account_file='sa.json'
+        )
+        
+        mock_save_gsheet.assert_called_once()
+        args, _ = mock_save_gsheet.call_args
+        assert isinstance(args[0], pd.DataFrame)
+        assert args[1] == 'http://sheet'
+        assert args[2] == 'sa.json'
+
+class TestSaveToGoogleSheet:
+    @pytest.fixture(autouse=True)
+    def mocks(self, monkeypatch):
+        self.mock_exists = MagicMock(return_value=True)
+        monkeypatch.setattr(os.path, 'exists', self.mock_exists)
+        
+        self.mock_creds = MagicMock()
+        monkeypatch.setattr(download_data.Credentials, 'from_service_account_file', MagicMock(return_value=self.mock_creds))
+        
+        self.mock_client = MagicMock()
+        monkeypatch.setattr(download_data.gspread, 'authorize', MagicMock(return_value=self.mock_client))
+        
+        self.mock_spreadsheet = MagicMock()
+        self.mock_client.open_by_url.return_value = self.mock_spreadsheet
+        
+        self.mock_worksheet = MagicMock()
+        self.mock_spreadsheet.get_worksheet.return_value = self.mock_worksheet
+        self.mock_spreadsheet.worksheets.return_value = [self.mock_worksheet]
+        self.mock_worksheet.id = 141030202
+
+    def test_save_success_headers_match(self, monkeypatch):
+        """Test successful append when headers match."""
+        df = pd.DataFrame({'col1': [1], 'col2': [2]})
+        self.mock_worksheet.get_all_values.return_value = [['col1', 'col2']]
+        
+        download_data.save_to_google_sheet(df, "http://sheet", "sa.json")
+        
+        # Should NOT append headers, but SHOULD append data row
+        assert self.mock_worksheet.append_row.call_count == 1
+        self.mock_worksheet.append_row.assert_called_once_with([1, 2])
+
+    def test_save_success_empty_sheet(self, monkeypatch):
+        """Test successful append when sheet is empty (adds headers)."""
+        df = pd.DataFrame({'col1': [1], 'col2': [2]})
+        self.mock_worksheet.get_all_values.return_value = []
+        
+        download_data.save_to_google_sheet(df, "http://sheet", "sa.json")
+        
+        # Should append headers AND data row
+        assert self.mock_worksheet.append_row.call_count == 2
+        self.mock_worksheet.append_row.assert_has_calls([
+            call(['col1', 'col2']),
+            call([1, 2])
+        ])
+
+    def test_save_abort_header_mismatch(self, monkeypatch, caplog):
+        """Test that it aborts and logs error if headers do not match."""
+        df = pd.DataFrame({'col1': [1], 'col2': [2]})
+        self.mock_worksheet.get_all_values.return_value = [['wrong_col', 'col2']]
+        
+        download_data.save_to_google_sheet(df, "http://sheet", "sa.json")
+        
+        # Should NOT append anything
+        self.mock_worksheet.append_row.assert_not_called()
+        assert "Google Sheet headers do not match" in caplog.text
+
+    def test_save_missing_sa_file(self, monkeypatch, caplog):
+        """Test that it logs error if service account file is missing."""
+        self.mock_exists.return_value = False
+        df = pd.DataFrame({'col1': [1]})
+        
+        download_data.save_to_google_sheet(df, "http://sheet", "sa.json")
+        
+        assert "Google service account file not found" in caplog.text
+        self.mock_client.open_by_url.assert_not_called()
+
 class TestFetchChannelData:
     @pytest.mark.parametrize("granularity, expected_scale, expected_unit", [
         ("MINUTE", Scale.MINUTE.value, 'm'),

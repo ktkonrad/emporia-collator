@@ -35,16 +35,21 @@ This project provides a Python script (`download_data.py`) to connect to the Emp
     aggregate_devices:
       - "Device Name 1"
       - "Device Name 2"
+    output:
+      google_sheet_url: "https://docs.google.com/spreadsheets/d/your_sheet_id/edit#gid=your_gid"
+      service_account_file: "service_account.json"
     ```
     Replace `your_emporia_email@example.com` and `your_emporia_password` with your actual Emporia account email and password.
 
     **Configuration Options:**
     *   `credentials.username`: Your Emporia Energy account email address. (Required)
     *   `credentials.password`: Your Emporia Energy account password. (Required)
-    *   `data.start_date`: (Optional) The start date for data download in `YYYY-MM-DD` format. If left empty, the script defaults to the first day of the previous calendar month.
-    *   `data.end_date`: (Optional) The end date for data download in `YYYY-MM-DD` format. If left empty, the script defaults to the last day of the previous calendar month.
+    *   `data.start_date`: (Optional) The start date for data download in `YYYY-MM-DD` format. If left empty, the script defaults to the most recent billing cycle ending on the 26th.
+    *   `data.end_date`: (Optional) The end date for data download in `YYYY-MM-DD` format. If left empty, the script defaults to the most recent billing cycle ending on the 26th.
     *   `data.granularity`: (Optional) The time interval for the data. Supported values are `MINUTE`, `HOUR`, or `DAY`. Defaults to `DAY`.
     *   `aggregate_devices`: (Optional) A list of device names to aggregate. For these devices, a single column will be created with the sum of all channels.
+    *   `output.google_sheet_url`: (Optional) The URL of a Google Sheet to append data to.
+    *   `output.service_account_file`: (Optional) The path to your Google Service Account JSON file. Defaults to `service_account.json`.
 
 ## Output Columns
 

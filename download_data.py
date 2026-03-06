@@ -6,6 +6,9 @@ from pyemvue.enums import Scale, Unit
 
 import logging
 import argparse
+import yaml
+import gspread
+from google.oauth2.service_account import Credentials
 from typing import Optional, Tuple, Dict, Any, List
 
 def setup_logging(verbosity: str):
@@ -196,6 +199,83 @@ def fetch_device_data(vue: PyEmVue, device: Any, start_date: date, end_date: dat
     df['device_name'] = device.device_name
     return df
 
+def save_to_google_sheet(df: pd.DataFrame, sheet_url: str, service_account_file: str):
+    """
+    Appends the provided DataFrame as a new row to a Google Sheet.
+
+    Args:
+        df (pd.DataFrame): The single-row DataFrame (totals) to append.
+        sheet_url (str): The URL of the Google Sheet.
+        service_account_file (str): Path to the Google service account JSON file.
+    """
+    if not os.path.exists(service_account_file):
+        logging.error(f"Google service account file not found: {service_account_file}")
+        return
+
+    try:
+        scope = ['https://www.googleapis.com/auth/spreadsheets']
+        creds = Credentials.from_service_account_file(service_account_file, scopes=scope)
+        client = gspread.authorize(creds)
+        
+        spreadsheet = client.open_by_url(sheet_url)
+        
+        # Parse the gid if present in the fragment
+        import urllib.parse
+        parsed_url = urllib.parse.urlparse(sheet_url)
+        fragment = parsed_url.fragment
+        query = urllib.parse.parse_qs(fragment)
+        gid = query.get('gid', [None])[0]
+        
+        if gid:
+            worksheet = None
+            for sheet in spreadsheet.worksheets():
+                if str(sheet.id) == gid:
+                    worksheet = sheet
+                    break
+            if not worksheet:
+                logging.warning(f"Worksheet with gid {gid} not found. Using first worksheet.")
+                worksheet = spreadsheet.get_worksheet(0)
+        else:
+            worksheet = spreadsheet.get_worksheet(0)
+
+        # Handle header if the sheet is empty
+        values = worksheet.get_all_values()
+        df_headers = df.columns.tolist()
+        
+        if not values:
+            worksheet.append_row(df_headers)
+        else:
+            existing_headers = values[0]
+            if existing_headers != df_headers:
+                # Find the specific mismatches
+                missing_in_sheet = set(df_headers) - set(existing_headers)
+                extra_in_sheet = set(existing_headers) - set(df_headers)
+                
+                error_msg = "Google Sheet headers do not match. Aborting.\n"
+                if missing_in_sheet:
+                    error_msg += f"  - Missing in Google Sheet: {sorted(list(missing_in_sheet))}\n"
+                if extra_in_sheet:
+                    error_msg += f"  - Extra in Google Sheet: {sorted(list(extra_in_sheet))}\n"
+                
+                # Also check for order mismatch if sets are same
+                if not missing_in_sheet and not extra_in_sheet:
+                    error_msg += "  - Headers are the same but in different order.\n"
+                    for i, (h1, h2) in enumerate(zip(df_headers, existing_headers)):
+                        if h1 != h2:
+                            error_msg += f"    - At index {i}: expected '{h1}', found '{h2}'\n"
+                
+                logging.error(error_msg)
+                return
+        
+        # Append the row
+        row_to_append = df.iloc[0].tolist()
+        worksheet.append_row([str(val) if not isinstance(val, (int, float)) else val for val in row_to_append])
+        logging.info("Successfully appended data to Google Sheet.")
+        
+    except Exception as e:
+        logging.error(f"Error saving to Google Sheet: {e}")
+
+
 def save_data(df: pd.DataFrame, start_date: date, output_folder: str):
     """
     Saves the combined DataFrame to a single CSV file.
@@ -214,9 +294,9 @@ def save_data(df: pd.DataFrame, start_date: date, output_folder: str):
     logging.info(f"Successfully saved device data to {filename}")
 
 
-def download_emporia_data(email: str, password: str, start_date: Optional[str], end_date: Optional[str], granularity: str, aggregate_devices: List[str], output_folder: str = 'emporia_data'):
+def download_emporia_data(email: str, password: str, start_date: Optional[str], end_date: Optional[str], granularity: str, aggregate_devices: List[str], output_folder: str = 'emporia_data', google_sheet_url: Optional[str] = None, service_account_file: Optional[str] = None):
     """
-    Orchestrates the download of Emporia data with configurable granularity into a single CSV file.
+    Orchestrates the download of Emporia data with configurable granularity into a single CSV file and optionally a Google Sheet.
 
     Args:
         email (str): The user's email address.
@@ -226,6 +306,8 @@ def download_emporia_data(email: str, password: str, start_date: Optional[str], 
         granularity (str): The granularity of the data.
         aggregate_devices (List[str]): List of device names to aggregate channels for.
         output_folder (str, optional): The folder to save data. Defaults to 'emporia_data'.
+        google_sheet_url (str, optional): The URL of the Google Sheet to append to.
+        service_account_file (str, optional): Path to the Google service account file.
     """
     vue = authenticate(email, password)
     if not vue:
@@ -292,11 +374,14 @@ def download_emporia_data(email: str, password: str, start_date: Optional[str], 
         totals_df.insert(0, 'period', period_str)
         
         save_data(totals_df, s_date, output_folder)
+        
+        if google_sheet_url and service_account_file:
+            save_to_google_sheet(totals_df, google_sheet_url, service_account_file)
     else:
         logging.warning("No data was downloaded for any device.")
 
 
-import yaml
+import argparse
 
 def load_config(config_file: str = 'config.yaml') -> Optional[Dict[str, Any]]:
     """
@@ -333,7 +418,9 @@ def load_config(config_file: str = 'config.yaml') -> Optional[Dict[str, Any]]:
             'start_date': start_date_obj.strftime('%Y-%m-%d') if isinstance(start_date_obj, date) else start_date_obj,
             'end_date': end_date_obj.strftime('%Y-%m-%d') if isinstance(end_date_obj, date) else end_date_obj,
             'granularity': data_config.get('granularity', 'DAY').upper(),
-            'aggregate_devices': config.get('aggregate_devices', [])
+            'aggregate_devices': config.get('aggregate_devices', []),
+            'google_sheet_url': config.get('output', {}).get('google_sheet_url'),
+            'service_account_file': config.get('output', {}).get('service_account_file', 'service_account.json')
         }
     except KeyError:
         logging.error("Error: 'credentials' section with 'username' and 'password' not found in config.yaml.")
@@ -365,7 +452,9 @@ def main():
             start_date=config['start_date'],
             end_date=config['end_date'],
             granularity=config['granularity'],
-            aggregate_devices=config['aggregate_devices']
+            aggregate_devices=config['aggregate_devices'],
+            google_sheet_url=config.get('google_sheet_url'),
+            service_account_file=config.get('service_account_file')
         )
 
 if __name__ == '__main__':

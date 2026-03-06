@@ -14,3 +14,6 @@ config.yaml
 
 # output data
 emporia_data
+
+# Google service account keys
+emporia-489404-5f484f5939f2.json

@@ -2,3 +2,5 @@ pyemvue
 pandas
 pytest
 PyYAML
+gspread
+google-auth
