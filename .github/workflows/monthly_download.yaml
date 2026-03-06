@@ -40,8 +40,9 @@ jobs:
             - "The Big Yurt"
             - "Singing Pines Hub"
             - "Small Cabin Hub"
-          google_sheets:
-            service_account_file: "service-account.json"
+          output:
+            google_sheet_url: https://docs.google.com/spreadsheets/d/1maoCrZuzxQJB8beHq6o9_677UvjJ1khtWLITaRIT_iE/edit?gid=141030202#gid=141030202
+            service_account_file: service-account.json
           EOF
         env:
           USER: ${{ secrets.EMPORIA_USERNAME }}
@@ -49,3 +50,9 @@ jobs:
 
       - name: Run script
         run: python download_data.py
+
+      - name: Upload local backup
+        uses: actions/upload-artifact@v4
+        with:
+          name: emporia-data-backup
+          path: emporia_data/ # Or whichever folder your script saves to
