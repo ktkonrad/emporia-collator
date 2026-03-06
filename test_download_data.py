@@ -129,12 +129,12 @@ class TestDownloadEmporiaData:
         self.mock_get_device_info = MagicMock(return_value=self.mock_device_info)
         monkeypatch.setattr(download_data, 'get_emporia_device_info', self.mock_get_device_info)
 
-        self.mock_fetch_device_data = MagicMock(return_value=pd.DataFrame({
+        self.mock_process_aggregated_device = MagicMock(return_value=pd.DataFrame({
             'instant': [datetime(2023, 1, 1)], 
-            'channel_1_cost_usd': [0.1],
-            'channel_1_usage_kwh': [0.5]
+            'Test Device (USD)': [0.1],
+            'Test Device (kWh)': [0.5]
         }))
-        monkeypatch.setattr(download_data, 'fetch_device_data', self.mock_fetch_device_data)
+        monkeypatch.setattr(download_data, 'process_aggregated_device', self.mock_process_aggregated_device)
 
         self.mock_fetch_channel_data = MagicMock(return_value=pd.DataFrame({
             'instant': [datetime(2023, 1, 1)], 
@@ -168,13 +168,13 @@ class TestDownloadEmporiaData:
         )
         expected_start = date(2023, 1, 1)
         expected_end = date(2023, 1, 31)
-        self.mock_fetch_device_data.assert_called_once_with(
+        self.mock_process_aggregated_device.assert_called_once_with(
             self.mock_vue_instance, self.mock_device1, expected_start, expected_end, 'DAY'
         )
         self.mock_fetch_channel_data.assert_not_called()
 
         saved_df = self.mock_save.call_args[0][0]
-        assert 'period' in saved_df.columns
+        assert 'Period' in saved_df.columns
         assert 'Test Device (USD)' in saved_df.columns
         assert 'Test Device (kWh)' in saved_df.columns
         assert len(saved_df) == 1
@@ -187,7 +187,7 @@ class TestDownloadEmporiaData:
             'email', 'pass', '2023-01-01', '2023-01-31', 'DAY', []
         )
         saved_df = self.mock_save.call_args[0][0]
-        assert 'period' in saved_df.columns
+        assert 'Period' in saved_df.columns
         assert 'Channel 1 (USD)' in saved_df.columns
         assert 'Channel 1 (kWh)' in saved_df.columns
         assert len(saved_df) == 1
@@ -265,6 +265,21 @@ class TestSaveToGoogleSheet:
         # Should NOT append anything
         self.mock_worksheet.append_row.assert_not_called()
         assert "Google Sheet headers do not match" in caplog.text
+        assert "Missing in Google Sheet: ['col1']" in caplog.text
+        assert "Extra in Google Sheet: ['wrong_col']" in caplog.text
+
+    def test_save_abort_header_order_mismatch(self, monkeypatch, caplog):
+        """Test that it aborts and logs error if headers are out of order."""
+        df = pd.DataFrame({'col1': [1], 'col2': [2]})
+        self.mock_worksheet.get_all_values.return_value = [['col2', 'col1']]
+        
+        download_data.save_to_google_sheet(df, "http://sheet", "sa.json")
+        
+        # Should NOT append anything
+        self.mock_worksheet.append_row.assert_not_called()
+        assert "Google Sheet headers do not match" in caplog.text
+        assert "Order mismatch" in caplog.text
+        assert "Index 0: expected 'col1', found 'col2'" in caplog.text
 
     def test_save_missing_sa_file(self, monkeypatch, caplog):
         """Test that it logs error if service account file is missing."""
@@ -275,6 +290,68 @@ class TestSaveToGoogleSheet:
         
         assert "Google service account file not found" in caplog.text
         self.mock_client.open_by_url.assert_not_called()
+
+class TestMainAndExitCodes:
+    def test_main_exits_1_on_config_failure(self, monkeypatch):
+        """Test that main() exits with code 1 if load_config returns None."""
+        monkeypatch.setattr(download_data, 'load_config', MagicMock(return_value=None))
+        
+        with pytest.raises(SystemExit) as excinfo:
+            download_data.main([])
+        assert excinfo.value.code == 1
+
+    def test_main_exits_1_on_download_failure(self, monkeypatch):
+        """Test that main() exits with code 1 if download_emporia_data returns False."""
+        mock_config = {
+            'email': 'test@example.com',
+            'password': 'pass',
+            'start_date': '2023-01-01',
+            'end_date': '2023-01-31',
+            'granularity': 'DAY',
+            'aggregate_devices': []
+        }
+        monkeypatch.setattr(download_data, 'load_config', MagicMock(return_value=mock_config))
+        monkeypatch.setattr(download_data, 'download_emporia_data', MagicMock(return_value=False))
+        
+        with pytest.raises(SystemExit) as excinfo:
+            download_data.main([])
+        assert excinfo.value.code == 1
+
+    def test_main_exits_0_on_success(self, monkeypatch):
+        """Test that main() exits with code 0 (implicitly) on success."""
+        mock_config = {
+            'email': 'test@example.com',
+            'password': 'pass',
+            'start_date': '2023-01-01',
+            'end_date': '2023-01-31',
+            'granularity': 'DAY',
+            'aggregate_devices': []
+        }
+        monkeypatch.setattr(download_data, 'load_config', MagicMock(return_value=mock_config))
+        monkeypatch.setattr(download_data, 'download_emporia_data', MagicMock(return_value=True))
+        
+        # main() shouldn't raise SystemExit(1) here. 
+        # If it finishes normally, it's a success (exit code 0).
+        download_data.main([])
+
+    def test_download_emporia_data_returns_false_on_auth_failure(self, monkeypatch):
+        """Test that download_emporia_data returns False if authentication fails."""
+        monkeypatch.setattr(download_data, 'authenticate', MagicMock(return_value=None))
+        
+        result = download_data.download_emporia_data(
+            'email', 'pass', '2023-01-01', '2023-01-31', 'DAY', []
+        )
+        assert result is False
+
+    def test_download_emporia_data_returns_false_on_no_data(self, monkeypatch):
+        """Test that download_emporia_data returns False if no data is downloaded."""
+        monkeypatch.setattr(download_data, 'authenticate', MagicMock(return_value=MagicMock()))
+        monkeypatch.setattr(download_data, 'get_emporia_device_info', MagicMock(return_value={}))
+        
+        result = download_data.download_emporia_data(
+            'email', 'pass', '2023-01-01', '2023-01-31', 'DAY', []
+        )
+        assert result is False
 
 class TestFetchChannelData:
     @pytest.mark.parametrize("granularity, expected_scale, expected_unit", [
@@ -389,10 +466,11 @@ def test_csv_output_header_aggregated(tmp_path, monkeypatch):
     assert csv_file_path.exists()
 
     df = pd.read_csv(csv_file_path)
-    expected_headers = ['period', 'Test Device (USD)', 'Test Device (kWh)']
+    expected_headers = ['Period', 
+ 'Test Device (USD)', 'Test Device (kWh)']
     assert list(df.columns) == expected_headers
     assert len(df) == 1
-    assert df['period'].iloc[0] == "2023-01-27 to 2023-02-26"
+    assert df['Period'].iloc[0] == "2023-01-27 to 2023-02-26"
     assert df['Test Device (USD)'].iloc[0] == pytest.approx(0.45)
     assert df['Test Device (kWh)'].iloc[0] == pytest.approx(2.25)
 
@@ -429,9 +507,10 @@ def test_csv_output_header_per_channel(tmp_path, monkeypatch):
     assert csv_file_path.exists()
 
     df = pd.read_csv(csv_file_path)
-    expected_headers = ['period', 'Channel 1 (USD)', 'Channel 1 (kWh)']
+    expected_headers = ['Period', 
+ 'Channel 1 (USD)', 'Channel 1 (kWh)']
     assert list(df.columns) == expected_headers
     assert len(df) == 1
-    assert df['period'].iloc[0] == "2023-01-27 to 2023-02-26"
+    assert df['Period'].iloc[0] == "2023-01-27 to 2023-02-26"
     assert df['Channel 1 (USD)'].iloc[0] == pytest.approx(0.45)
     assert df['Channel 1 (kWh)'].iloc[0] == pytest.approx(2.25)
