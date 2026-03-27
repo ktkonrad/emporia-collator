@@ -61,27 +61,20 @@ def get_emporia_device_info(vue: PyEmVue) -> Optional[Dict[int, Any]]:
         devices = vue.get_devices()
         device_info: Dict[int, Any] = {}
         for device in devices:
-            # Populate extra properties (like device_name)
             vue.populate_device_properties(device)
             gid = device.device_gid
             if gid not in device_info:
                 device_info[gid] = device
             else:
-                # Merge device properties if they were missing (e.g. device_name)
-                if not device_info[gid].device_name and device.device_name:
-                    device_info[gid].device_name = device.device_name
+                # Merge properties if device already exists (e.g., from multiple API calls or nested devices)
+                if not device_info[gid].device_name: device_info[gid].device_name = device.device_name
                 
-                # Deduplicate and merge channels
-                existing_channels = {str(c.channel_num): c for c in device_info[gid].channels}
+                existing_nums = {ch.channel_num for ch in device_info[gid].channels}
                 for ch in device.channels:
-                    num = str(ch.channel_num)
-                    if num not in existing_channels:
+                    if ch.channel_num not in existing_nums:
                         device_info[gid].channels.append(ch)
-                        existing_channels[num] = ch
-                    else:
-                        # Merge channel properties (e.g. name)
-                        if not existing_channels[num].name and ch.name:
-                            existing_channels[num].name = ch.name
+                        existing_nums.add(ch.channel_num)
+        
         logging.info(f"Found {len(device_info)} devices.")
         return device_info
     except Exception as e:
@@ -139,88 +132,64 @@ def fetch_channel_data(vue: PyEmVue, channel: Any, start_date: date, end_date: d
         logging.error(f"  Error fetching data for channel {ch_name}: {e}")
     return None
 
-def fetch_device_data(vue: PyEmVue, device: Any, s_date: date, e_date: date, granularity: str) -> List[pd.DataFrame]:
-    """
-    Fetches all individual channels for a device as separate DataFrames.
+def compute_balance(device_name: str, total_df: pd.DataFrame, main_dfs: List[pd.DataFrame]) -> Optional[pd.DataFrame]:
+    """Computes the balance channel: Total (1,2,3) - sum(channels 1, 2, 3)."""
+    if total_df is None:
+        return None
+        
+    balance_name = f"{device_name} balance"
+    combined_df = total_df[['instant']].copy()
     
-    Always fetches the '1,2,3' pseudochannel to compute a 'balance' channel.
-    Phase '1' is named after the device if unnamed. Phases '2' and '3' get indexed names.
-    Expansion channels (4+) use their user-defined names or a default.
-    """
+    usd_cols = []
+    kwh_cols = []
+    
+    for df in main_dfs:
+        combined_df = pd.merge(combined_df, df, on='instant', how='left')
+        usd_cols.extend([c for c in df.columns if '(USD)' in c])
+        kwh_cols.extend([c for c in df.columns if '(kWh)' in c])
+        
+    combined_df = combined_df.fillna(0)
+    
+    sum_usd = combined_df[usd_cols].sum(axis=1) if usd_cols else 0
+    sum_kwh = combined_df[kwh_cols].sum(axis=1) if kwh_cols else 0
+    
+    balance_df = pd.DataFrame({
+        'instant': total_df['instant'],
+        f'{balance_name} (USD)': total_df['TOTAL (USD)'] - sum_usd,
+        f'{balance_name} (kWh)': total_df['TOTAL (kWh)'] - sum_kwh
+    })
+    
+    # Only return if balance is non-zero
+    if (balance_df[f'{balance_name} (USD)'].abs() > 1e-6).any() or \
+       (balance_df[f'{balance_name} (kWh)'].abs() > 1e-6).any():
+        return balance_df
+    return None
+
+def fetch_device_data(vue: PyEmVue, device: Any, s_date: date, e_date: date, granularity: str) -> List[pd.DataFrame]:
+    """Fetches all individual channels for a device as separate DataFrames."""
     logging.info(f"Fetching data for device: {device.device_name}")
     
-    total_channel = None
-    main_channels = []
-    expansion_channels = []
-    
-    for ch in device.channels:
-        num = str(ch.channel_num)
-        if num == '1,2,3':
-            total_channel = ch
-        elif num in ['1', '2', '3']:
-            main_channels.append(ch)
-        elif ',' not in num:
-            # Expansion channels (4+)
-            expansion_channels.append(ch)
+    total_channel = next((ch for ch in device.channels if str(ch.channel_num) == '1,2,3'), None)
+    main_channels = [ch for ch in device.channels if str(ch.channel_num) in ['1', '2', '3']]
+    expansion_channels = [ch for ch in device.channels if ',' not in str(ch.channel_num) and str(ch.channel_num) not in ['1', '2', '3']]
 
-    # Fetch total data (the '1,2,3' pseudochannel)
-    total_df = None
-    if total_channel:
-        total_df = fetch_channel_data(vue, total_channel, s_date, e_date, granularity, target_name="TOTAL")
+    total_df = fetch_channel_data(vue, total_channel, s_date, e_date, granularity, target_name="TOTAL") if total_channel else None
     
-    # Fetch main channels data (1, 2, 3)
     main_dfs = []
     for ch in main_channels:
-        num = str(ch.channel_num)
-        if num == '1':
-            name = ch.name if ch.name else device.device_name
-        else:
-            name = ch.name if ch.name else f"{device.device_name} Phase {num}"
+        name = ch.name or (device.device_name if str(ch.channel_num) == '1' else f"{device.device_name} Phase {ch.channel_num}")
         df = fetch_channel_data(vue, ch, s_date, e_date, granularity, target_name=name)
-        if df is not None:
-            main_dfs.append(df)
+        if df is not None: main_dfs.append(df)
     
-    # Fetch expansion channels data (4+)
     expansion_dfs = []
     for ch in expansion_channels:
-        name = ch.name if ch.name else f"{device.device_name} Channel {ch.channel_num}"
+        name = ch.name or f"{device.device_name} Channel {ch.channel_num}"
         df = fetch_channel_data(vue, ch, s_date, e_date, granularity, target_name=name)
-        if df is not None:
-            expansion_dfs.append(df)
+        if df is not None: expansion_dfs.append(df)
             
-    # Compute and add balance channel if we have the total
-    if total_df is not None:
-        balance_name = f"{device.device_name} balance"
-        
-        # Merge all main channel data to calculate their sum
-        combined_main_df = total_df[['instant']].copy()
-        main_usd_cols = []
-        main_kwh_cols = []
-        
-        for df in main_dfs:
-            combined_main_df = pd.merge(combined_main_df, df, on='instant', how='left')
-            main_usd_cols.extend([c for c in df.columns if '(USD)' in c])
-            main_kwh_cols.extend([c for c in df.columns if '(kWh)' in c])
-        
-        combined_main_df = combined_main_df.fillna(0)
-        
-        # Calculate balance
-        sum_main_usd = combined_main_df[main_usd_cols].sum(axis=1) if main_usd_cols else 0
-        sum_main_kwh = combined_main_df[main_kwh_cols].sum(axis=1) if main_kwh_cols else 0
-        
-        balance_usd = total_df['TOTAL (USD)'] - sum_main_usd
-        balance_kwh = total_df['TOTAL (kWh)'] - sum_main_kwh
-        
-        balance_df = pd.DataFrame({
-            'instant': total_df['instant'],
-            f'{balance_name} (USD)': balance_usd,
-            f'{balance_name} (kWh)': balance_kwh
-        })
-        
-        # Only include balance if it's non-zero (accounting for floating point diffs)
-        if (balance_df[f'{balance_name} (USD)'].abs() > 1e-6).any() or \
-           (balance_df[f'{balance_name} (kWh)'].abs() > 1e-6).any():
-            expansion_dfs.append(balance_df)
+    balance_df = compute_balance(device.device_name, total_df, main_dfs)
+    if balance_df is not None:
+        expansion_dfs.append(balance_df)
             
     return main_dfs + expansion_dfs
 
@@ -280,6 +249,24 @@ def save_data(df: pd.DataFrame, reference_date: date, output_folder: str):
     df.to_csv(filename, index=False)
     logging.info(f"Successfully saved device data to {filename}")
 
+def aggregate_data(df: pd.DataFrame, aggregation_map: Dict[str, List[str]]) -> pd.DataFrame:
+    """Aggregates columns based on the provided map."""
+    processed_df = pd.DataFrame({'instant': df['instant']})
+    consumed_cols = set()
+    
+    for output_name, input_cols in aggregation_map.items():
+        usd_cols = [c for c in input_cols if '(USD)' in c]
+        kwh_cols = [c for c in input_cols if '(kWh)' in c]
+        
+        if usd_cols: processed_df[f"{output_name} (USD)"] = df[usd_cols].sum(axis=1)
+        if kwh_cols: processed_df[f"{output_name} (kWh)"] = df[kwh_cols].sum(axis=1)
+        consumed_cols.update(input_cols)
+            
+    remaining_cols = [c for c in df.columns if c != 'instant' and c not in consumed_cols]
+    for col in remaining_cols:
+        processed_df[col] = df[col]
+    return processed_df
+
 def download_emporia_data(email: str, password: str, start_date: Optional[str], end_date: Optional[str], granularity: str, aggregate_devices: List[str], output_all_channels: bool = False, output_folder: str = DEFAULT_OUTPUT_FOLDER, google_sheet_url: Optional[str] = None, service_account_file: Optional[str] = DEFAULT_SERVICE_ACCOUNT_FILE) -> bool:
     """Main orchestration function for downloading and saving data."""
     vue = authenticate(email, password)
@@ -296,18 +283,11 @@ def download_emporia_data(email: str, password: str, start_date: Optional[str], 
 
     for device in device_info.values():
         device_dfs = fetch_device_data(vue, device, s_date, e_date, granularity)
-        if not device_dfs:
-            continue
+        if not device_dfs: continue
             
         all_dfs.extend(device_dfs)
-        
         if device.device_name in aggregate_devices:
-            # Map the aggregated device name to all its individual channel names
-            channels = []
-            for df in device_dfs:
-                # The first column is 'instant', the rest are the data columns
-                channels.extend([c for c in df.columns if c != 'instant'])
-            aggregation_map[device.device_name] = channels
+            aggregation_map[device.device_name] = [c for df in device_dfs for c in df.columns if c != 'instant']
 
     if not all_dfs:
         logging.warning("No data downloaded.")
@@ -317,40 +297,16 @@ def download_emporia_data(email: str, password: str, start_date: Optional[str], 
     for i in range(1, len(all_dfs)):
         final_df = pd.merge(final_df, all_dfs[i], on='instant', how='outer')
     
-    # Perform aggregation if not outputting all channels
     if not output_all_channels:
         logging.info("Aggregating data as configured...")
-        processed_df = pd.DataFrame({'instant': final_df['instant']})
-        
-        # Tracks columns that have been consumed into an aggregation
-        consumed_cols = set()
-        for output_name, input_cols in aggregation_map.items():
-            # Filter for USD and kWh specifically
-            usd_cols = [c for c in input_cols if '(USD)' in c]
-            kwh_cols = [c for c in input_cols if '(kWh)' in c]
-            
-            if usd_cols:
-                processed_df[f"{output_name} (USD)"] = final_df[usd_cols].sum(axis=1)
-            if kwh_cols:
-                processed_df[f"{output_name} (kWh)"] = final_df[kwh_cols].sum(axis=1)
-            
-            consumed_cols.update(input_cols)
-            
-        # Add any columns that weren't aggregated
-        remaining_cols = [c for c in final_df.columns if c != 'instant' and c not in consumed_cols]
-        for col in remaining_cols:
-            processed_df[col] = final_df[col]
-            
-        final_df = processed_df
+        final_df = aggregate_data(final_df, aggregation_map)
 
     totals = final_df[[c for c in final_df.columns if c != 'instant']].sum()
     totals_df = pd.DataFrame([totals])
     totals_df.insert(0, 'Period', f"{s_date} to {e_date}")
     
     save_data(totals_df, e_date, output_folder)
-    if google_sheet_url:
-        return save_to_google_sheet(totals_df, google_sheet_url, service_account_file)
-    return True
+    return save_to_google_sheet(totals_df, google_sheet_url, service_account_file) if google_sheet_url else True
 
 def load_config(config_file: str = DEFAULT_CONFIG_FILE) -> Optional[Dict[str, Any]]:
     """Loads and validates the configuration file."""
