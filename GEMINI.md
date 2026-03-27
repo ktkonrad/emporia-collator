@@ -9,6 +9,21 @@ This project provides a Python script (`download_data.py`) to connect to the Emp
 - Downloads usage data for each channel of each device for the previous calendar month, with configurable granularity.
 - Saves the collected data into a single CSV file.
 
+## Key Concepts
+
+To understand how data is fetched and presented, it's important to understand several core concepts:
+
+-   **Device**: A physical Emporia hardware unit (e.g., a Vue 2 energy monitor). A single account can have multiple devices.
+-   **Channel**: An individual sensor or phase being monitored by a device. Channels 1, 2, and 3 are typically the main phases connected to your utility meter. Channels 4 and above represent expansion CTs for individual circuits.
+-   **Total (1,2,3) Pseudochannel**: A virtual channel in the Emporia API (represented as channel number `'1,2,3'`) that returns the aggregate usage of the three main phases.
+-   **Balance**: The difference between the **Total (1,2,3)** and the sum of the individual monitored main phases (1, 2, and 3). This represents usage on the main phases that isn't accounted for by individual sensors.
+
+### Mapping to Web & API
+
+-   **Web Interface**: Shows a "Total" usage (from the `1,2,3` pseudochannel), each individual channel's usage, and a "Balance" which is calculated as `Total - sum(monitored channels)`.
+-   **API**: Provides data for individual channels (1, 2, 3, 4+) and the aggregate `1,2,3` pseudochannel.
+-   **This Script**: For each device, always fetches the `1,2,3` pseudochannel data and computes the "balance" channel locally. This ensures that the output reflects the same data model seen in the web interface and accurately captures all energy usage.
+
 ## Setup
 
 1.  **Install dependencies**:
