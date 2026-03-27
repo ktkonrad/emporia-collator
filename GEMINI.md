@@ -80,4 +80,4 @@ The script will:
 
 -   **Hanging during login**: If the script hangs indefinitely during login, it might be due to network connectivity issues to AWS Cognito. Ensure your network allows outbound connections to `cognito-idp.us-east-2.amazonaws.com`.
 -   **`400 Client Error`**: This can occur if there are issues with the parameters sent to the Emporia API. The script attempts to use appropriate `scale` and `unit` values. If errors persist, it might indicate specific device or channel issues on the Emporia side, or temporary API problems.
--   **"Skipping pseudo-channel: None (1,2,3)"**: Some devices may report a pseudo-channel like "1,2,3" which is not directly supported by the API for data fetching. The script will automatically skip these channels.
+-   **Balance Calculation**: For devices where not all phases are monitored, the script fetches the '1,2,3' pseudochannel to compute a 'balance' channel (Total - sum of monitored phases 1, 2, and 3). This ensures total usage is accurately captured.

@@ -99,8 +99,8 @@ def fetch_channel_data(vue: PyEmVue, channel: Any, start_date: date, end_date: d
     is_main = str(channel.channel_num) in ['1', '2', '3']
     ch_name = target_name or channel.name
     
-    # Skip multi-channels (like '1,2,3') to ensure we get individual phases
-    if ',' in str(channel.channel_num):
+    # Skip multi-channels (like '1,2,4') but allow '1,2,3' for the total
+    if ',' in str(channel.channel_num) and str(channel.channel_num) != '1,2,3':
         return None
         
     if not ch_name:
@@ -143,35 +143,86 @@ def fetch_device_data(vue: PyEmVue, device: Any, s_date: date, e_date: date, gra
     """
     Fetches all individual channels for a device as separate DataFrames.
     
+    Always fetches the '1,2,3' pseudochannel to compute a 'balance' channel.
     Phase '1' is named after the device if unnamed. Phases '2' and '3' get indexed names.
     Expansion channels (4+) use their user-defined names or a default.
     """
     logging.info(f"Fetching data for device: {device.device_name}")
     
-    channels_to_fetch = []
+    total_channel = None
+    main_channels = []
+    expansion_channels = []
+    
     for ch in device.channels:
         num = str(ch.channel_num)
-        
-        # Determine name
-        if num == '1':
-            name = ch.name if ch.name else device.device_name
-        elif num in ['2', '3']:
-            name = ch.name if ch.name else f"{device.device_name} Phase {num}"
+        if num == '1,2,3':
+            total_channel = ch
+        elif num in ['1', '2', '3']:
+            main_channels.append(ch)
         elif ',' not in num:
             # Expansion channels (4+)
-            name = ch.name if ch.name else f"{device.device_name} Channel {num}"
-        else:
-            # Skip multi-channels (like '1,2,3')
-            continue
-            
-        channels_to_fetch.append((ch, name))
+            expansion_channels.append(ch)
 
-    dfs = []
-    for channel, name in channels_to_fetch:
-        df = fetch_channel_data(vue, channel, s_date, e_date, granularity, target_name=name)
+    # Fetch total data (the '1,2,3' pseudochannel)
+    total_df = None
+    if total_channel:
+        total_df = fetch_channel_data(vue, total_channel, s_date, e_date, granularity, target_name="TOTAL")
+    
+    # Fetch main channels data (1, 2, 3)
+    main_dfs = []
+    for ch in main_channels:
+        num = str(ch.channel_num)
+        if num == '1':
+            name = ch.name if ch.name else device.device_name
+        else:
+            name = ch.name if ch.name else f"{device.device_name} Phase {num}"
+        df = fetch_channel_data(vue, ch, s_date, e_date, granularity, target_name=name)
         if df is not None:
-            dfs.append(df)
-    return dfs
+            main_dfs.append(df)
+    
+    # Fetch expansion channels data (4+)
+    expansion_dfs = []
+    for ch in expansion_channels:
+        name = ch.name if ch.name else f"{device.device_name} Channel {ch.channel_num}"
+        df = fetch_channel_data(vue, ch, s_date, e_date, granularity, target_name=name)
+        if df is not None:
+            expansion_dfs.append(df)
+            
+    # Compute and add balance channel if we have the total
+    if total_df is not None:
+        balance_name = f"{device.device_name} balance"
+        
+        # Merge all main channel data to calculate their sum
+        combined_main_df = total_df[['instant']].copy()
+        main_usd_cols = []
+        main_kwh_cols = []
+        
+        for df in main_dfs:
+            combined_main_df = pd.merge(combined_main_df, df, on='instant', how='left')
+            main_usd_cols.extend([c for c in df.columns if '(USD)' in c])
+            main_kwh_cols.extend([c for c in df.columns if '(kWh)' in c])
+        
+        combined_main_df = combined_main_df.fillna(0)
+        
+        # Calculate balance
+        sum_main_usd = combined_main_df[main_usd_cols].sum(axis=1) if main_usd_cols else 0
+        sum_main_kwh = combined_main_df[main_kwh_cols].sum(axis=1) if main_kwh_cols else 0
+        
+        balance_usd = total_df['TOTAL (USD)'] - sum_main_usd
+        balance_kwh = total_df['TOTAL (kWh)'] - sum_main_kwh
+        
+        balance_df = pd.DataFrame({
+            'instant': total_df['instant'],
+            f'{balance_name} (USD)': balance_usd,
+            f'{balance_name} (kWh)': balance_kwh
+        })
+        
+        # Only include balance if it's non-zero (accounting for floating point diffs)
+        if (balance_df[f'{balance_name} (USD)'].abs() > 1e-6).any() or \
+           (balance_df[f'{balance_name} (kWh)'].abs() > 1e-6).any():
+            expansion_dfs.append(balance_df)
+            
+    return main_dfs + expansion_dfs
 
 def save_to_google_sheet(df: pd.DataFrame, sheet_url: str, service_account_file: str) -> bool:
     """Appends data to a Google Sheet."""

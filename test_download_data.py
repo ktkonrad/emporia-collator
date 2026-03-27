@@ -122,25 +122,92 @@ class TestDownloadEmporiaData:
         assert 'Test Device (USD)' not in saved_df.columns
 
 class TestFetchDeviceData:
-    def test_fetch_device_data_naming(self, monkeypatch):
-        """Test that fetch_device_data uses correct naming rules."""
+    def test_fetch_device_data_naming_and_balance(self, monkeypatch):
+        """Test that fetch_device_data uses correct naming rules and computes balance."""
         mock_vue = MagicMock()
         mock_device = MagicMock()
         mock_device.device_name = "MyVue"
         
         ch1 = MagicMock(); ch1.channel_num = '1'; ch1.name = "Mains"
-        ch2 = MagicMock(); ch2.channel_num = '2'; ch2.name = None # Fallback
-        mock_device.channels = [ch1, ch2]
+        ch2 = MagicMock(); ch2.channel_num = '2'; ch2.name = None
+        ch_total = MagicMock(); ch_total.channel_num = '1,2,3'; ch_total.name = None
+        mock_device.channels = [ch1, ch2, ch_total]
         
-        mock_fetch_ch = MagicMock(return_value=pd.DataFrame({'instant': [datetime(2023,1,1)], 'val': [1]}))
+        def mock_fetch_ch(vue, channel, start_date, end_date, granularity, target_name=None):
+            if target_name == "TOTAL":
+                return pd.DataFrame({
+                    'instant': [datetime(2023,1,1)], 
+                    'TOTAL (USD)': [1.0], 
+                    'TOTAL (kWh)': [10.0]
+                })
+            elif target_name == "Mains":
+                return pd.DataFrame({
+                    'instant': [datetime(2023,1,1)], 
+                    'Mains (USD)': [0.3], 
+                    'Mains (kWh)': [3.0]
+                })
+            elif target_name == "MyVue Phase 2":
+                return pd.DataFrame({
+                    'instant': [datetime(2023,1,1)], 
+                    'MyVue Phase 2 (USD)': [0.3], 
+                    'MyVue Phase 2 (kWh)': [3.0]
+                })
+            return None
+
         monkeypatch.setattr(download_data, 'fetch_channel_data', mock_fetch_ch)
         
         dfs = download_data.fetch_device_data(mock_vue, mock_device, date(2023,1,1), date(2023,1,2), "DAY")
         
-        # Verify target names passed to fetch_channel_data
-        calls = mock_fetch_ch.call_args_list
-        assert calls[0][1]['target_name'] == "Mains"
-        assert calls[1][1]['target_name'] == "MyVue Phase 2"
+        # Should return 3 DataFrames: Mains, Phase 2, and Balance
+        assert len(dfs) == 3
+        
+        # Check names
+        all_cols = []
+        for df in dfs:
+            all_cols.extend([c for c in df.columns if c != 'instant'])
+        
+        assert "Mains (USD)" in all_cols
+        assert "MyVue Phase 2 (USD)" in all_cols
+        assert "MyVue balance (USD)" in all_cols
+        
+        # Check balance calculation: 1.0 - (0.3 + 0.3) = 0.4
+        balance_df = next(df for df in dfs if "MyVue balance (USD)" in df.columns)
+        assert balance_df["MyVue balance (USD)"].iloc[0] == pytest.approx(0.4)
+        assert balance_df["MyVue balance (kWh)"].iloc[0] == pytest.approx(4.0)
+
+    def test_fetch_device_data_no_balance_if_zero(self, monkeypatch):
+        """Test that balance channel is omitted if it is effectively zero."""
+        mock_vue = MagicMock()
+        mock_device = MagicMock()
+        mock_device.device_name = "MyVue"
+        
+        ch1 = MagicMock(); ch1.channel_num = '1'; ch1.name = "Mains"
+        ch_total = MagicMock(); ch_total.channel_num = '1,2,3'; ch_total.name = None
+        mock_device.channels = [ch1, ch_total]
+        
+        def mock_fetch_ch(vue, channel, start_date, end_date, granularity, target_name=None):
+            if target_name == "TOTAL":
+                return pd.DataFrame({
+                    'instant': [datetime(2023,1,1)], 
+                    'TOTAL (USD)': [1.0], 
+                    'TOTAL (kWh)': [10.0]
+                })
+            elif target_name == "Mains":
+                return pd.DataFrame({
+                    'instant': [datetime(2023,1,1)], 
+                    'Mains (USD)': [1.0], 
+                    'Mains (kWh)': [10.0]
+                })
+            return None
+
+        monkeypatch.setattr(download_data, 'fetch_channel_data', mock_fetch_ch)
+        
+        dfs = download_data.fetch_device_data(mock_vue, mock_device, date(2023,1,1), date(2023,1,2), "DAY")
+        
+        # Should return only 1 DataFrame: Mains (Balance is 0)
+        assert len(dfs) == 1
+        assert "Mains (USD)" in dfs[0].columns
+        assert not any("Balance" in c for df in dfs for c in df.columns)
 
 class TestGetEmporiaDeviceInfo:
     def test_get_emporia_device_info_populates_properties(self):
