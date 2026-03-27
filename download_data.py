@@ -61,22 +61,56 @@ def get_emporia_device_info(vue: PyEmVue) -> Optional[Dict[int, Any]]:
         devices = vue.get_devices()
         device_info: Dict[int, Any] = {}
         for device in devices:
-            if device.device_gid not in device_info:
-                device_info[device.device_gid] = device
+            # Populate extra properties (like device_name)
+            vue.populate_device_properties(device)
+            gid = device.device_gid
+            if gid not in device_info:
+                device_info[gid] = device
             else:
-                device_info[device.device_gid].channels.extend(device.channels)
+                # Merge device properties if they were missing (e.g. device_name)
+                if not device_info[gid].device_name and device.device_name:
+                    device_info[gid].device_name = device.device_name
+                
+                # Deduplicate and merge channels
+                existing_channels = {str(c.channel_num): c for c in device_info[gid].channels}
+                for ch in device.channels:
+                    num = str(ch.channel_num)
+                    if num not in existing_channels:
+                        device_info[gid].channels.append(ch)
+                        existing_channels[num] = ch
+                    else:
+                        # Merge channel properties (e.g. name)
+                        if not existing_channels[num].name and ch.name:
+                            existing_channels[num].name = ch.name
         logging.info(f"Found {len(device_info)} devices.")
         return device_info
     except Exception as e:
         logging.error(f"Error getting devices: {e}")
         return None
 
-def fetch_channel_data(vue: PyEmVue, channel: Any, start_date: date, end_date: date, granularity: str) -> Optional[pd.DataFrame]:
-    """Fetches usage and cost data for a single channel."""
-    if not channel.name or ',' in str(channel.channel_num):
+def fetch_channel_data(vue: PyEmVue, channel: Any, start_date: date, end_date: date, granularity: str, target_name: Optional[str] = None) -> Optional[pd.DataFrame]:
+    """
+    Fetches usage and cost data for a single channel.
+    
+    Emporia devices use channel_num '1', '2', and '3' for the main phases.
+    Expansion CTs (e.g., for individual circuits) start at channel_num '4' and onwards.
+    """
+    # Identify if this is a main phase
+    is_main = str(channel.channel_num) in ['1', '2', '3']
+    ch_name = target_name or channel.name
+    
+    # Skip multi-channels (like '1,2,3') to ensure we get individual phases
+    if ',' in str(channel.channel_num):
         return None
+        
+    if not ch_name:
+        # For channels that might not have a user-defined name
+        if is_main:
+            ch_name = f"Main ({channel.channel_num})"
+        else:
+            ch_name = f"Channel {channel.channel_num}"
 
-    logging.info(f"  Fetching data for channel: {channel.name} ({channel.channel_num})")
+    logging.info(f"  Fetching data for channel: {ch_name} ({channel.channel_num})")
     
     if granularity.upper() not in GRANULARITY_MAP:
         logging.warning(f"  Unsupported granularity: {granularity}")
@@ -92,52 +126,51 @@ def fetch_channel_data(vue: PyEmVue, channel: Any, start_date: date, end_date: d
 
         if usage_usd and usage_kwh:
             if all(v is None for v in usage_usd) and all(v is None for v in usage_kwh):
-                logging.warning(f"  No valid usage data returned for channel {channel.name}")
+                logging.warning(f"  {ch_name} is empty")
                 return None
 
             timestamps = pd.to_datetime(start_time_usd) + pd.to_timedelta(range(len(usage_usd)), unit=time_unit)
             return pd.DataFrame({
                 'instant': timestamps,
-                f'channel_{channel.channel_num}_cost_usd': usage_usd,
-                f'channel_{channel.channel_num}_usage_kwh': usage_kwh
+                f'{ch_name} (USD)': usage_usd,
+                f'{ch_name} (kWh)': usage_kwh
             })
     except Exception as e:
-        logging.error(f"  Error fetching data for channel {channel.name}: {e}")
+        logging.error(f"  Error fetching data for channel {ch_name}: {e}")
     return None
 
-def process_aggregated_device(vue: PyEmVue, device: Any, s_date: date, e_date: date, granularity: str) -> Optional[pd.DataFrame]:
-    """Processes a device by summing all its channels."""
-    logging.info(f"Processing device (aggregated): {device.device_name}")
-    channel_dfs = [fetch_channel_data(vue, ch, s_date, e_date, granularity) for ch in device.channels]
-    channel_dfs = [df for df in channel_dfs if df is not None]
+def fetch_device_data(vue: PyEmVue, device: Any, s_date: date, e_date: date, granularity: str) -> List[pd.DataFrame]:
+    """
+    Fetches all individual channels for a device as separate DataFrames.
     
-    if not channel_dfs:
-        return None
-        
-    df = channel_dfs[0]
-    for i in range(1, len(channel_dfs)):
-        df = pd.merge(df, channel_dfs[i], on='instant', how='outer')
-        
-    cost_cols = [col for col in df.columns if 'cost_usd' in col]
-    usage_cols = [col for col in df.columns if 'usage_kwh' in col]
+    Phase '1' is named after the device if unnamed. Phases '2' and '3' get indexed names.
+    Expansion channels (4+) use their user-defined names or a default.
+    """
+    logging.info(f"Fetching data for device: {device.device_name}")
     
-    res = pd.DataFrame({'instant': df['instant']})
-    res[f"{device.device_name} (USD)"] = df[cost_cols].sum(axis=1)
-    res[f"{device.device_name} (kWh)"] = df[usage_cols].sum(axis=1)
-    return res
+    channels_to_fetch = []
+    for ch in device.channels:
+        num = str(ch.channel_num)
+        
+        # Determine name
+        if num == '1':
+            name = ch.name if ch.name else device.device_name
+        elif num in ['2', '3']:
+            name = ch.name if ch.name else f"{device.device_name} Phase {num}"
+        elif ',' not in num:
+            # Expansion channels (4+)
+            name = ch.name if ch.name else f"{device.device_name} Channel {num}"
+        else:
+            # Skip multi-channels (like '1,2,3')
+            continue
+            
+        channels_to_fetch.append((ch, name))
 
-def process_per_channel_device(vue: PyEmVue, device: Any, s_date: date, e_date: date, granularity: str) -> List[pd.DataFrame]:
-    """Processes a device by keeping channels separate."""
-    logging.info(f"Processing device (per-channel): {device.device_name}")
     dfs = []
-    for channel in device.channels:
-        df = fetch_channel_data(vue, channel, s_date, e_date, granularity)
+    for channel, name in channels_to_fetch:
+        df = fetch_channel_data(vue, channel, s_date, e_date, granularity, target_name=name)
         if df is not None:
-            rename_dict = {
-                next(c for c in df.columns if 'cost_usd' in c): f"{channel.name} (USD)",
-                next(c for c in df.columns if 'usage_kwh' in c): f"{channel.name} (kWh)"
-            }
-            dfs.append(df.rename(columns=rename_dict))
+            dfs.append(df)
     return dfs
 
 def save_to_google_sheet(df: pd.DataFrame, sheet_url: str, service_account_file: str) -> bool:
@@ -196,7 +229,7 @@ def save_data(df: pd.DataFrame, reference_date: date, output_folder: str):
     df.to_csv(filename, index=False)
     logging.info(f"Successfully saved device data to {filename}")
 
-def download_emporia_data(email: str, password: str, start_date: Optional[str], end_date: Optional[str], granularity: str, aggregate_devices: List[str], output_folder: str = DEFAULT_OUTPUT_FOLDER, google_sheet_url: Optional[str] = None, service_account_file: Optional[str] = DEFAULT_SERVICE_ACCOUNT_FILE) -> bool:
+def download_emporia_data(email: str, password: str, start_date: Optional[str], end_date: Optional[str], granularity: str, aggregate_devices: List[str], output_all_channels: bool = False, output_folder: str = DEFAULT_OUTPUT_FOLDER, google_sheet_url: Optional[str] = None, service_account_file: Optional[str] = DEFAULT_SERVICE_ACCOUNT_FILE) -> bool:
     """Main orchestration function for downloading and saving data."""
     vue = authenticate(email, password)
     if not vue: return False
@@ -208,12 +241,22 @@ def download_emporia_data(email: str, password: str, start_date: Optional[str], 
     logging.info(f"Period: {s_date} to {e_date} ({granularity})")
 
     all_dfs = []
+    aggregation_map: Dict[str, List[str]] = {}
+
     for device in device_info.values():
+        device_dfs = fetch_device_data(vue, device, s_date, e_date, granularity)
+        if not device_dfs:
+            continue
+            
+        all_dfs.extend(device_dfs)
+        
         if device.device_name in aggregate_devices:
-            df = process_aggregated_device(vue, device, s_date, e_date, granularity)
-            if df is not None: all_dfs.append(df)
-        else:
-            all_dfs.extend(process_per_channel_device(vue, device, s_date, e_date, granularity))
+            # Map the aggregated device name to all its individual channel names
+            channels = []
+            for df in device_dfs:
+                # The first column is 'instant', the rest are the data columns
+                channels.extend([c for c in df.columns if c != 'instant'])
+            aggregation_map[device.device_name] = channels
 
     if not all_dfs:
         logging.warning("No data downloaded.")
@@ -223,6 +266,32 @@ def download_emporia_data(email: str, password: str, start_date: Optional[str], 
     for i in range(1, len(all_dfs)):
         final_df = pd.merge(final_df, all_dfs[i], on='instant', how='outer')
     
+    # Perform aggregation if not outputting all channels
+    if not output_all_channels:
+        logging.info("Aggregating data as configured...")
+        processed_df = pd.DataFrame({'instant': final_df['instant']})
+        
+        # Tracks columns that have been consumed into an aggregation
+        consumed_cols = set()
+        for output_name, input_cols in aggregation_map.items():
+            # Filter for USD and kWh specifically
+            usd_cols = [c for c in input_cols if '(USD)' in c]
+            kwh_cols = [c for c in input_cols if '(kWh)' in c]
+            
+            if usd_cols:
+                processed_df[f"{output_name} (USD)"] = final_df[usd_cols].sum(axis=1)
+            if kwh_cols:
+                processed_df[f"{output_name} (kWh)"] = final_df[kwh_cols].sum(axis=1)
+            
+            consumed_cols.update(input_cols)
+            
+        # Add any columns that weren't aggregated
+        remaining_cols = [c for c in final_df.columns if c != 'instant' and c not in consumed_cols]
+        for col in remaining_cols:
+            processed_df[col] = final_df[col]
+            
+        final_df = processed_df
+
     totals = final_df[[c for c in final_df.columns if c != 'instant']].sum()
     totals_df = pd.DataFrame([totals])
     totals_df.insert(0, 'Period', f"{s_date} to {e_date}")
@@ -271,11 +340,16 @@ def main(args=None):
     parser = argparse.ArgumentParser(description='Download Emporia Energy data.')
     parser.add_argument('-v', '--verbose', action='store_const', dest='verbosity', const='DEBUG', help='Verbose logging.')
     parser.add_argument('-q', '--quiet', action='store_const', dest='verbosity', const='WARNING', help='Quiet logging.')
+    parser.add_argument('--output_all_channels', action='store_true', help='Output all individual channels, ignoring aggregation config.')
     parsed_args = parser.parse_args(args)
 
     setup_logging(parsed_args.verbosity or 'INFO')
     config = load_config()
-    if not config or not download_emporia_data(**config):
+    if not config:
+        sys.exit(1)
+        
+    config['output_all_channels'] = parsed_args.output_all_channels
+    if not download_emporia_data(**config):
         sys.exit(1)
 
 if __name__ == '__main__':
