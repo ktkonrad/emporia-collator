@@ -202,27 +202,28 @@ def fetch_device_data(vue: PyEmVue, device: Any, s_date: date, e_date: date, gra
     # 1. Identify the 'Total' pseudochannel (1,2,3)
     total_channel = next((ch for ch in device.channels if str(ch.channel_num) == '1,2,3'), None)
     
-    # 2. Filter for only named channels (skips unpopulated ports)
-    named_channels = [ch for ch in device.channels if ch.name]
-    
-    # 3. Categorize channels for easier tracking
-    main_channels = [ch for ch in named_channels if str(ch.channel_num) in ['1', '2', '3']]
-    expansion_channels = [ch for ch in named_channels if ',' not in str(ch.channel_num) and str(ch.channel_num) not in ['1', '2', '3']]
+    # 2. Filter for individual channels that have a name.
+    # We skip pseudochannels (those with commas in the channel_num) here 
+    # because they represent aggregates already covered by individual channels or the Total.
+    monitored_channels = [
+        ch for ch in device.channels 
+        if ch.name and ',' not in str(ch.channel_num)
+    ]
 
-    # 4. Fetch the absolute total (for balance calculation and verification)
+    # 3. Fetch the absolute total (for balance calculation and verification)
     total_df = fetch_channel_data(vue, total_channel, s_date, e_date, granularity, target_name="TOTAL") if total_channel else None
     
-    # 5. Fetch all monitored component data
+    # 4. Fetch usage for all individual monitored channels
     component_dfs = []
-    for ch in (main_channels + expansion_channels):
+    for ch in monitored_channels:
         df = fetch_channel_data(vue, ch, s_date, e_date, granularity, target_name=ch.name)
         if df is not None:
             component_dfs.append(df)
             
-    # 6. Calculate the 'Balance' (Total - sum(monitored components))
+    # 5. Calculate the 'Balance' (Total - sum(monitored components))
     balance_df = compute_balance(device.device_name, total_df, component_dfs)
     
-    # 7. Build the final set of DataFrames for this device
+    # 6. Build the final set of DataFrames for this device
     results = component_dfs
     if balance_df is not None:
         results.append(balance_df)
