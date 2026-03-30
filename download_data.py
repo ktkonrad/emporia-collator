@@ -295,7 +295,7 @@ def aggregate_data(df: pd.DataFrame, aggregation_map: Dict[str, List[str]], keep
         processed_df[col] = df[col]
     return processed_df
 
-def download_emporia_data(email: str, password: str, start_date: Optional[str], end_date: Optional[str], granularity: str, aggregate_devices: List[str], output_all_channels: bool = False, all_channels: bool = False, output_folder: str = DEFAULT_OUTPUT_FOLDER, google_sheet_url: Optional[str] = None, service_account_file: Optional[str] = DEFAULT_SERVICE_ACCOUNT_FILE) -> bool:
+def download_emporia_data(email: str, password: str, start_date: Optional[str], end_date: Optional[str], granularity: str, aggregate_devices: List[str], skip_aggregation: bool = False, all_channels: bool = False, output_folder: str = DEFAULT_OUTPUT_FOLDER, google_sheet_url: Optional[str] = None, service_account_file: Optional[str] = DEFAULT_SERVICE_ACCOUNT_FILE) -> bool:
     """Main orchestration function for downloading and saving data."""
     vue = authenticate(email, password)
     if not vue: return False
@@ -334,12 +334,12 @@ def download_emporia_data(email: str, password: str, start_date: Optional[str], 
         all_channels_totals_df.insert(0, 'Period', f"{s_date} to {e_date}")
         save_data(all_channels_totals_df, e_date, output_folder, suffix='_all_channels')
 
-    if not output_all_channels:
+    if not skip_aggregation:
         logging.info("Aggregating data as configured...")
         final_df = aggregate_data(final_df, aggregation_map)
         
     # Remove [Total] columns from final output unless specifically requested
-    if not (all_channels or output_all_channels):
+    if not (all_channels or skip_aggregation):
         cols_to_keep = [c for c in final_df.columns if not c.startswith('[Total]')]
         final_df = final_df[cols_to_keep]
 
@@ -389,7 +389,7 @@ def main(args=None):
     parser = argparse.ArgumentParser(description='Download Emporia Energy data.')
     parser.add_argument('-v', '--verbose', action='store_const', dest='verbosity', const='DEBUG', help='Verbose logging.')
     parser.add_argument('-q', '--quiet', action='store_const', dest='verbosity', const='WARNING', help='Quiet logging.')
-    parser.add_argument('--output_all_channels', action='store_true', help='Output all individual channels, ignoring aggregation config.')
+    parser.add_argument('--skip_aggregation', action='store_true', help='Output all individual channels, ignoring aggregation config.')
     parser.add_argument('--all_channels', action='store_true', help='Output all individual channels as a separate CSV, with aggregated columns.')
     parsed_args = parser.parse_args(args)
 
@@ -398,7 +398,7 @@ def main(args=None):
     if not config:
         sys.exit(1)
         
-    config['output_all_channels'] = parsed_args.output_all_channels
+    config['skip_aggregation'] = parsed_args.skip_aggregation
     config['all_channels'] = parsed_args.all_channels
     if not download_emporia_data(**config):
         sys.exit(1)

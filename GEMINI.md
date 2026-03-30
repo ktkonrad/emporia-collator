@@ -30,6 +30,11 @@ This ensures that the total usage reported always matches the actual energy cons
 ### Timezone Handling
 All timestamps and date ranges are treated as **America/Los_Angeles** local time. The script automatically handles the conversion to UTC for Emporia API requests and localizes the returned data for the final output.
 
+### Mapping to Web & API
+-   **Web Interface**: Shows a "Total" usage (from the `1,2,3` pseudochannel), each individual channel's usage, and a "Balance" which is calculated as `Total - sum(all monitored channels)`.
+-   **API**: Provides data for individual channels (1, 2, 3, 4+) and the aggregate `1,2,3` pseudochannel.
+-   **This Script**: For each device, always fetches the `1,2,3` pseudochannel data and computes the "balance" channel locally. This ensures that the output reflects the same data model seen in the web interface and accurately captures all energy usage. When using `--all_channels` or `--skip_aggregation`, the raw `1,2,3` data is also included as a `[Total]` column for verification.
+
 ## Setup
 
 1.  **Install dependencies**:
@@ -70,7 +75,7 @@ uv run download_data.py [options]
 
 ### Options
 -   `--all_channels`: Generates an additional CSV file with a `_all_channels` suffix. This file includes both the aggregated device totals AND individual sub-channels (prefixed with `[sub] `). It also includes a raw `[Total]` column for verification.
--   `--output_all_channels`: Disables aggregation entirely in the main output. Every named channel is output as its own column.
+-   `--skip_aggregation`: Disables aggregation entirely in the main output. Every named channel is output as its own column.
 -   `-v`, `--verbose`: Enables detailed debug logging.
 -   `-q`, `--quiet`: Only logs warnings and errors.
 

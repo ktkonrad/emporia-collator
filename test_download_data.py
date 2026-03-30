@@ -106,15 +106,15 @@ class TestDownloadEmporiaData:
         assert saved_df['Test Device (kWh)'].iloc[0] == pytest.approx(1.5)
         assert 'Ch1 (USD)' not in saved_df.columns
 
-    def test_output_all_channels(self):
-        """Test that --output_all_channels skips aggregation."""
+    def test_skip_aggregation(self):
+        """Test that --skip_aggregation skips aggregation."""
         self.mock_fetch_device_data.return_value = [
             pd.DataFrame({'instant': [datetime(2023, 1, 1)], 'Ch1 (USD)': [0.1], 'Ch1 (kWh)': [0.5]})
         ]
         
         download_data.download_emporia_data(
             'email', 'pass', '2023-01-01', '2023-01-31', 'DAY', ["Test Device"],
-            output_all_channels=True
+            skip_aggregation=True
         )
         
         saved_df = self.mock_save.call_args[0][0]
