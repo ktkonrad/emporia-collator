@@ -96,7 +96,8 @@ class TestDownloadEmporiaData:
         ]
         
         download_data.download_emporia_data(
-            'email', 'pass', '2023-01-01', '2023-01-31', 'DAY', ["Test Device"]
+            email='email', password='pass', start_date_str='2023-01-01', end_date_str='2023-01-31', 
+            granularity='DAY', aggregate_devices=["Test Device"]
         )
         
         saved_df = self.mock_save.call_args[0][0]
@@ -113,7 +114,8 @@ class TestDownloadEmporiaData:
         ]
         
         download_data.download_emporia_data(
-            'email', 'pass', '2023-01-01', '2023-01-31', 'DAY', ["Test Device"],
+            email='email', password='pass', start_date_str='2023-01-01', end_date_str='2023-01-31', 
+            granularity='DAY', aggregate_devices=["Test Device"],
             skip_aggregation=True
         )
         
@@ -129,7 +131,8 @@ class TestDownloadEmporiaData:
         ]
         
         download_data.download_emporia_data(
-            'email', 'pass', '2023-01-01', '2023-01-31', 'DAY', ["Test Device"],
+            email='email', password='pass', start_date_str='2023-01-01', end_date_str='2023-01-31', 
+            granularity='DAY', aggregate_devices=["Test Device"],
             all_channels=True
         )
         
@@ -359,7 +362,10 @@ def test_csv_output_header_aggregated(tmp_path, monkeypatch):
     monkeypatch.setattr(download_data, 'get_default_dates', MagicMock(return_value=(date(2023, 1, 27), date(2023, 2, 26))))
 
     output_folder = tmp_path / "emporia_data"
-    download_data.download_emporia_data('test@example.com', 'pass', None, None, 'DAY', ["Test Device"], output_folder=str(output_folder))
+    download_data.download_emporia_data(
+        email='test@example.com', password='pass', start_date_str=None, end_date_str=None, 
+        granularity='DAY', aggregate_devices=["Test Device"], output_folder=str(output_folder)
+    )
 
     csv_file_path = output_folder / "emporia_data_2023-02.csv"
     df = pd.read_csv(csv_file_path)
