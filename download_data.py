@@ -6,16 +6,18 @@ import yaml
 import gspread
 import pandas as pd
 import urllib.parse
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, timezone
 from typing import Optional, Tuple, Dict, Any, List
 from pyemvue import PyEmVue
 from pyemvue.enums import Scale, Unit
 from google.oauth2.service_account import Credentials
+from zoneinfo import ZoneInfo
 
 # Constants
 DEFAULT_CONFIG_FILE = 'config.yaml'
 DEFAULT_OUTPUT_FOLDER = 'emporia_data'
 DEFAULT_SERVICE_ACCOUNT_FILE = 'service_account.json'
+LOCAL_TZ = ZoneInfo('America/Los_Angeles')
 GRANULARITY_MAP = {
     'MINUTE': (Scale.MINUTE.value, 'm'),
     'HOUR': (Scale.HOUR.value, 'h'),
@@ -110,19 +112,29 @@ def fetch_channel_data(vue: PyEmVue, channel: Any, start_date: date, end_date: d
         return None
         
     scale_value, time_unit = GRANULARITY_MAP[granularity.upper()]
-    start_dt = datetime.combine(start_date, datetime.min.time())
-    end_dt = datetime.combine(end_date, datetime.max.time()).replace(second=0, microsecond=0)
+    
+    # Create local datetimes and convert to UTC
+    start_dt_local = datetime.combine(start_date, datetime.min.time()).replace(tzinfo=LOCAL_TZ)
+    end_dt_local = datetime.combine(end_date, datetime.max.time()).replace(second=0, microsecond=0, tzinfo=LOCAL_TZ)
+    
+    start_dt_utc = start_dt_local.astimezone(timezone.utc)
+    end_dt_utc = end_dt_local.astimezone(timezone.utc)
 
     try:
-        usage_usd, start_time_usd = vue.get_chart_usage(channel=channel, start=start_dt, end=end_dt, scale=scale_value, unit=Unit.USD.value)
-        usage_kwh, _ = vue.get_chart_usage(channel=channel, start=start_dt, end=end_dt, scale=scale_value, unit=Unit.KWH.value)
+        usage_usd, start_time_usd = vue.get_chart_usage(channel=channel, start=start_dt_utc, end=end_dt_utc, scale=scale_value, unit=Unit.USD.value)
+        usage_kwh, _ = vue.get_chart_usage(channel=channel, start=start_dt_utc, end=end_dt_utc, scale=scale_value, unit=Unit.KWH.value)
 
         if usage_usd and usage_kwh:
             if all(v is None for v in usage_usd) and all(v is None for v in usage_kwh):
                 logging.warning(f"  {ch_name} is empty")
                 return None
 
-            timestamps = pd.to_datetime(start_time_usd) + pd.to_timedelta(range(len(usage_usd)), unit=time_unit)
+            # Convert returned UTC timestamp to local timezone
+            if start_time_usd.tzinfo is None:
+                start_time_usd = start_time_usd.replace(tzinfo=timezone.utc)
+            start_time_local = start_time_usd.astimezone(LOCAL_TZ)
+
+            timestamps = pd.to_datetime([start_time_local] * len(usage_usd)) + pd.to_timedelta(range(len(usage_usd)), unit=time_unit)
             return pd.DataFrame({
                 'instant': timestamps,
                 f'{ch_name} (USD)': usage_usd,

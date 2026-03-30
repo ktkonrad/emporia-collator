@@ -1,7 +1,7 @@
 import pytest
 from unittest.mock import MagicMock, call
 import pandas as pd
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 import download_data
 import os
 from pyemvue.enums import Scale
@@ -304,6 +304,37 @@ class TestFetchChannelData:
         
         df = download_data.fetch_channel_data(mock_vue, mock_channel, date(2023,1,1), date(2023,1,2), granularity)
         assert mock_vue.get_chart_usage.call_args_list[0][1]['scale'] == expected_scale
+
+    def test_timezone_conversion(self, monkeypatch):
+        """Test that local dates are converted to UTC for the API call and back for the result."""
+        mock_vue = MagicMock()
+        mock_channel = MagicMock(); mock_channel.channel_num = '1'; mock_channel.name = "Ch1"
+        
+        # 2023-01-01 00:00:00 America/Los_Angeles is 2023-01-01 08:00:00 UTC
+        # 2023-01-01 23:59:00 America/Los_Angeles is 2023-01-02 07:59:00 UTC
+        
+        mock_vue.get_chart_usage.side_effect = [
+            ([0.1], datetime(2023, 1, 1, 8, 0, 0, tzinfo=timezone.utc)),
+            ([0.5], datetime(2023, 1, 1, 8, 0, 0, tzinfo=timezone.utc))
+        ]
+        
+        df = download_data.fetch_channel_data(mock_vue, mock_channel, date(2023,1,1), date(2023,1,2), "DAY")
+        
+        # Verify API calls used UTC
+        args_list = mock_vue.get_chart_usage.call_args_list
+        start_utc = args_list[0][1]['start']
+        end_utc = args_list[0][1]['end']
+        
+        assert start_utc.tzinfo == timezone.utc
+        assert start_utc.hour == 8
+        assert end_utc.tzinfo == timezone.utc
+        assert end_utc.hour == 7 # 23:59 local -> 07:59 UTC next day
+        
+        # Verify result uses local timezone
+        assert df['instant'].iloc[0].tzinfo is not None
+        # pandas to_datetime might return a Timestamp with tz
+        assert df['instant'].iloc[0].hour == 0
+        assert df['instant'].iloc[0].day == 1
 
 def test_csv_output_header_aggregated(tmp_path, monkeypatch):
     """Integration test for aggregated output header."""
