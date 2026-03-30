@@ -6,23 +6,29 @@ This project provides a Python script (`download_data.py`) to connect to the Emp
 
 - Authenticates with the Emporia Energy API using credentials from a configuration file.
 - Fetches a list of all devices associated with your account.
-- Downloads usage data for each channel of each device for the previous calendar month, with configurable granularity.
-- Saves the collected data into a single CSV file.
+- Downloads usage data for each channel of each device for a specified period or the previous calendar month.
+- Supports multiple granularities: `MINUTE`, `HOUR`, or `DAY`.
+- **Intelligent Aggregation**: Can sum all channels of a device into a single column based on configuration.
+- **Balance Calculation**: Automatically computes a "Balance" channel to capture usage not accounted for by individual sensors.
+- **Timezone Support**: Handles data in the `America/Los_Angeles` timezone, converting to UTC for API requests and back to local time for output.
+- **Performance Optimized**: Skips unnamed channels (ports with no CT attached) to speed up data fetching.
+- **Multiple Output Formats**: Saves data to local CSV files and can optionally append results to a Google Sheet.
 
 ## Key Concepts
 
-To understand how data is fetched and presented, it's important to understand several core concepts:
+### Devices and Channels
+-   **Device**: A physical Emporia hardware unit (e.g., a Vue 2 energy monitor).
+-   **Channel**: An individual sensor or phase. Channels 1, 2, and 3 are typically the main phases. Channels 4+ represent expansion CTs for individual circuits.
+-   **Total (1,2,3) Pseudochannel**: A virtual channel in the API that returns the aggregate usage of the main phases.
 
--   **Device**: A physical Emporia hardware unit (e.g., a Vue 2 energy monitor). A single account can have multiple devices.
--   **Channel**: An individual sensor or phase being monitored by a device. Channels 1, 2, and 3 are typically the main phases connected to your utility meter. Channels 4 and above represent expansion CTs for individual circuits.
--   **Total (1,2,3) Pseudochannel**: A virtual channel in the Emporia API (represented as channel number `'1,2,3'`) that returns the aggregate usage of the three main phases.
-- **Balance**: The difference between the **Total (1,2,3)** and the sum of ALL other monitored channels (mains and expansion). This represents usage on the main phases that isn't accounted for by ANY individual sensor.
+### Balance Calculation
+The **Balance** represents usage on the main phases that isn't accounted for by ANY individual sensor. It is calculated as:
+`Balance = Total (1,2,3) - Sum(All Named Monitored Channels)`
 
-### Mapping to Web & API
+This ensures that the total usage reported always matches the actual energy consumed, even if not all circuits are monitored.
 
--   **Web Interface**: Shows a "Total" usage (from the `1,2,3` pseudochannel), each individual channel's usage, and a "Balance" which is calculated as `Total - sum(all monitored channels)`.
--   **API**: Provides data for individual channels (1, 2, 3, 4+) and the aggregate `1,2,3` pseudochannel.
--   **This Script**: For each device, always fetches the `1,2,3` pseudochannel data and computes the "balance" channel locally. This ensures that the output reflects the same data model seen in the web interface and accurately captures all energy usage. When using `--all_channels` or `--output_all_channels`, the raw `1,2,3` data is also included as a `[Total]` column for verification.
+### Timezone Handling
+All timestamps and date ranges are treated as **America/Los_Angeles** local time. The script automatically handles the conversion to UTC for Emporia API requests and localizes the returned data for the final output.
 
 ## Setup
 
@@ -37,7 +43,7 @@ To understand how data is fetched and presented, it's important to understand se
     ```
 
 2.  **Configure Credentials**:
-    Create a file named `config.yaml` in the root directory of this project with your Emporia Energy API credentials. This file is ignored by Git to protect your sensitive information.
+    Create a file named `config.yaml` in the root directory:
 
     ```yaml
     credentials:
@@ -49,50 +55,31 @@ To understand how data is fetched and presented, it's important to understand se
       granularity: DAY
     aggregate_devices:
       - "Device Name 1"
-      - "Device Name 2"
     output:
       google_sheet_url: "https://docs.google.com/spreadsheets/d/your_sheet_id/edit#gid=your_gid"
       service_account_file: "service_account.json"
     ```
-    Replace `your_emporia_email@example.com` and `your_emporia_password` with your actual Emporia account email and password.
-
-    **Configuration Options:**
-    *   `credentials.username`: Your Emporia Energy account email address. (Required)
-    *   `credentials.password`: Your Emporia Energy account password. (Required)
-    *   `data.start_date`: (Optional) The start date for data download in `YYYY-MM-DD` format. If left empty, the script defaults to the most recent billing cycle ending on the 26th.
-    *   `data.end_date`: (Optional) The end date for data download in `YYYY-MM-DD` format. If left empty, the script defaults to the most recent billing cycle ending on the 26th.
-    *   `data.granularity`: (Optional) The time interval for the data. Supported values are `MINUTE`, `HOUR`, or `DAY`. Defaults to `DAY`.
-    *   `aggregate_devices`: (Optional) A list of device names to aggregate. For these devices, a single column will be created with the sum of all channels.
-    *   `output.google_sheet_url`: (Optional) The URL of a Google Sheet to append data to.
-    *   `output.service_account_file`: (Optional) The path to your Google Service Account JSON file. Defaults to `service_account.json`.
-
-
-## Output Columns
-
-By default, the script will output one column for each channel of your Emporia devices, using the channel name as the column name. 
-
-If a device name is listed in the `aggregate_devices` section of `config.yaml`, the script will instead output a single column for that device, containing the sum of all its channels, and using the device name as the column name.
 
 ## Usage
 
-To download data, simply run the `download_data.py` script:
+Run the script using `uv` or `python`:
 
 ```bash
-uv run download_data.py
-```
-or if using `pip`:
-```bash
-python download_data.py
+uv run download_data.py [options]
 ```
 
-The script will:
-- Log in to the Emporia API.
-- Discover your devices and their channels.
-- Fetch historical usage data for the previous calendar month.
-- Save a single CSV file in an `emporia_data/` directory (which will be created if it doesn't exist).
+### Options
+-   `--all_channels`: Generates an additional CSV file with a `_all_channels` suffix. This file includes both the aggregated device totals AND individual sub-channels (prefixed with `[sub] `). It also includes a raw `[Total]` column for verification.
+-   `--output_all_channels`: Disables aggregation entirely in the main output. Every named channel is output as its own column.
+-   `-v`, `--verbose`: Enables detailed debug logging.
+-   `-q`, `--quiet`: Only logs warnings and errors.
+
+## Output Files
+Data is saved in the `emporia_data/` directory:
+- `emporia_data_YYYY-MM.csv`: The main output file, aggregated according to `config.yaml`.
+- `emporia_data_YYYY-MM_all_channels.csv`: (Optional) Detailed report containing all individual channels.
 
 ## Troubleshooting
-
--   **Hanging during login**: If the script hangs indefinitely during login, it might be due to network connectivity issues to AWS Cognito. Ensure your network allows outbound connections to `cognito-idp.us-east-2.amazonaws.com`.
--   **`400 Client Error`**: This can occur if there are issues with the parameters sent to the Emporia API. The script attempts to use appropriate `scale` and `unit` values. If errors persist, it might indicate specific device or channel issues on the Emporia side, or temporary API problems.
--   **Balance Calculation**: For devices where not all phases are monitored, the script fetches the '1,2,3' pseudochannel to compute a 'balance' channel (Total - sum of monitored phases 1, 2, and 3). This ensures total usage is accurately captured.
+- **Discrepancies with Web App**: Ensure your `aggregate_devices` list matches your expectations. Use `--all_channels` to compare the `[Total]` column (raw API data) against the calculated balance and components.
+- **Empty Channels**: The script only fetches data for **named** channels. If a circuit is missing, ensure it has a name assigned in the Emporia mobile app.
+- **Login Issues**: Ensure outbound connections to `cognito-idp.us-east-2.amazonaws.com` are allowed.
