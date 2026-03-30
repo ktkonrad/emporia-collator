@@ -170,21 +170,24 @@ def fetch_device_data(vue: PyEmVue, device: Any, s_date: date, e_date: date, gra
     logging.info(f"Fetching data for device: {device.device_name}")
     
     total_channel = next((ch for ch in device.channels if str(ch.channel_num) == '1,2,3'), None)
-    main_channels = [ch for ch in device.channels if str(ch.channel_num) in ['1', '2', '3']]
-    expansion_channels = [ch for ch in device.channels if ',' not in str(ch.channel_num) and str(ch.channel_num) not in ['1', '2', '3']]
+    
+    # Filter for channels that have a name
+    # We require ch.name to be non-empty to fetch it individually
+    named_channels = [ch for ch in device.channels if ch.name]
+    
+    main_channels = [ch for ch in named_channels if str(ch.channel_num) in ['1', '2', '3']]
+    expansion_channels = [ch for ch in named_channels if ',' not in str(ch.channel_num) and str(ch.channel_num) not in ['1', '2', '3']]
 
     total_df = fetch_channel_data(vue, total_channel, s_date, e_date, granularity, target_name="TOTAL") if total_channel else None
     
     main_dfs = []
     for ch in main_channels:
-        name = ch.name or (device.device_name if str(ch.channel_num) == '1' else f"{device.device_name} Phase {ch.channel_num}")
-        df = fetch_channel_data(vue, ch, s_date, e_date, granularity, target_name=name)
+        df = fetch_channel_data(vue, ch, s_date, e_date, granularity, target_name=ch.name)
         if df is not None: main_dfs.append(df)
     
     expansion_dfs = []
     for ch in expansion_channels:
-        name = ch.name or f"{device.device_name} Channel {ch.channel_num}"
-        df = fetch_channel_data(vue, ch, s_date, e_date, granularity, target_name=name)
+        df = fetch_channel_data(vue, ch, s_date, e_date, granularity, target_name=ch.name)
         if df is not None: expansion_dfs.append(df)
             
     balance_df = compute_balance(device.device_name, total_df, main_dfs + expansion_dfs)

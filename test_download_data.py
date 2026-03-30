@@ -160,6 +160,7 @@ class TestFetchDeviceData:
         ch1 = MagicMock(); ch1.channel_num = '1'; ch1.name = "Mains"
         ch2 = MagicMock(); ch2.channel_num = '2'; ch2.name = None
         ch4 = MagicMock(); ch4.channel_num = '4'; ch4.name = "Kitchen"
+        ch5 = MagicMock(); ch5.channel_num = '5'; ch5.name = "Empty"
         ch_total = MagicMock(); ch_total.channel_num = '1,2,3'; ch_total.name = None
         mock_device.channels = [ch1, ch2, ch4, ch_total]
         
@@ -173,20 +174,14 @@ class TestFetchDeviceData:
             elif target_name == "Mains":
                 return pd.DataFrame({
                     'instant': [datetime(2023,1,1)], 
-                    'Mains (USD)': [0.3], 
-                    'Mains (kWh)': [3.0]
-                })
-            elif target_name == "MyVue Phase 2":
-                return pd.DataFrame({
-                    'instant': [datetime(2023,1,1)], 
-                    'MyVue Phase 2 (USD)': [0.2], 
-                    'MyVue Phase 2 (kWh)': [2.0]
+                    'Mains (USD)': [0.4], 
+                    'Mains (kWh)': [4.0]
                 })
             elif target_name == "Kitchen":
                 return pd.DataFrame({
                     'instant': [datetime(2023,1,1)], 
-                    'Kitchen (USD)': [0.1], 
-                    'Kitchen (kWh)': [1.0]
+                    'Kitchen (USD)': [0.2], 
+                    'Kitchen (kWh)': [2.0]
                 })
             return None
 
@@ -194,8 +189,9 @@ class TestFetchDeviceData:
         
         dfs = download_data.fetch_device_data(mock_vue, mock_device, date(2023,1,1), date(2023,1,2), "DAY")
         
-        # Should return 5 DataFrames: Mains, Phase 2, Kitchen, Balance, and [Total]
-        assert len(dfs) == 5
+        # Should return 4 DataFrames: Mains, Kitchen, Balance, and [Total]
+        # (Unnamed Channel 2 is skipped)
+        assert len(dfs) == 4
         
         # Check names
         all_cols = []
@@ -203,12 +199,11 @@ class TestFetchDeviceData:
             all_cols.extend([c for c in df.columns if c != 'instant'])
         
         assert "Mains (USD)" in all_cols
-        assert "MyVue Phase 2 (USD)" in all_cols
         assert "Kitchen (USD)" in all_cols
         assert "MyVue balance (USD)" in all_cols
         assert "[Total] MyVue (USD)" in all_cols
         
-        # Check balance calculation: 1.0 - (0.3 + 0.2 + 0.1) = 0.4
+        # Check balance calculation: 1.0 - (0.4 + 0.2) = 0.4
         balance_df = next(df for df in dfs if "MyVue balance (USD)" in df.columns)
         assert balance_df["MyVue balance (USD)"].iloc[0] == pytest.approx(0.4)
         assert balance_df["MyVue balance (kWh)"].iloc[0] == pytest.approx(4.0)
