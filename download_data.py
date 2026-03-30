@@ -132,8 +132,8 @@ def fetch_channel_data(vue: PyEmVue, channel: Any, start_date: date, end_date: d
         logging.error(f"  Error fetching data for channel {ch_name}: {e}")
     return None
 
-def compute_balance(device_name: str, total_df: pd.DataFrame, main_dfs: List[pd.DataFrame]) -> Optional[pd.DataFrame]:
-    """Computes the balance channel: Total (1,2,3) - sum(channels 1, 2, 3)."""
+def compute_balance(device_name: str, total_df: pd.DataFrame, other_dfs: List[pd.DataFrame]) -> Optional[pd.DataFrame]:
+    """Computes the balance channel: Total (1,2,3) - sum(all other monitored channels)."""
     if total_df is None:
         return None
         
@@ -143,7 +143,7 @@ def compute_balance(device_name: str, total_df: pd.DataFrame, main_dfs: List[pd.
     usd_cols = []
     kwh_cols = []
     
-    for df in main_dfs:
+    for df in other_dfs:
         combined_df = pd.merge(combined_df, df, on='instant', how='left')
         usd_cols.extend([c for c in df.columns if '(USD)' in c])
         kwh_cols.extend([c for c in df.columns if '(kWh)' in c])
@@ -187,11 +187,19 @@ def fetch_device_data(vue: PyEmVue, device: Any, s_date: date, e_date: date, gra
         df = fetch_channel_data(vue, ch, s_date, e_date, granularity, target_name=name)
         if df is not None: expansion_dfs.append(df)
             
-    balance_df = compute_balance(device.device_name, total_df, main_dfs)
+    balance_df = compute_balance(device.device_name, total_df, main_dfs + expansion_dfs)
+    
+    results = main_dfs + expansion_dfs
     if balance_df is not None:
-        expansion_dfs.append(balance_df)
+        results.append(balance_df)
+        
+    if total_df is not None:
+        # Include raw total for debugging/verification
+        raw_total_df = total_df.copy()
+        raw_total_df.columns = ['instant', f'[Total] {device.device_name} (USD)', f'[Total] {device.device_name} (kWh)']
+        results.append(raw_total_df)
             
-    return main_dfs + expansion_dfs
+    return results
 
 def save_to_google_sheet(df: pd.DataFrame, sheet_url: str, service_account_file: str) -> bool:
     """Appends data to a Google Sheet."""
@@ -292,7 +300,8 @@ def download_emporia_data(email: str, password: str, start_date: Optional[str], 
             
         all_dfs.extend(device_dfs)
         if device.device_name in aggregate_devices:
-            aggregation_map[device.device_name] = [c for df in device_dfs for c in df.columns if c != 'instant']
+            # Exclude [Total] columns from aggregation to avoid double-counting
+            aggregation_map[device.device_name] = [c for df in device_dfs for c in df.columns if c != 'instant' and not c.startswith('[Total]')]
 
     if not all_dfs:
         logging.warning("No data downloaded.")
@@ -313,6 +322,11 @@ def download_emporia_data(email: str, password: str, start_date: Optional[str], 
     if not output_all_channels:
         logging.info("Aggregating data as configured...")
         final_df = aggregate_data(final_df, aggregation_map)
+        
+    # Remove [Total] columns from final output unless specifically requested
+    if not (all_channels or output_all_channels):
+        cols_to_keep = [c for c in final_df.columns if not c.startswith('[Total]')]
+        final_df = final_df[cols_to_keep]
 
     totals = final_df[[c for c in final_df.columns if c != 'instant']].sum()
     totals_df = pd.DataFrame([totals])

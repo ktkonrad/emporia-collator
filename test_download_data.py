@@ -152,15 +152,16 @@ class TestDownloadEmporiaData:
 
 class TestFetchDeviceData:
     def test_fetch_device_data_naming_and_balance(self, monkeypatch):
-        """Test that fetch_device_data uses correct naming rules and computes balance."""
+        """Test that fetch_device_data uses correct naming rules and computes balance including expansion channels."""
         mock_vue = MagicMock()
         mock_device = MagicMock()
         mock_device.device_name = "MyVue"
         
         ch1 = MagicMock(); ch1.channel_num = '1'; ch1.name = "Mains"
         ch2 = MagicMock(); ch2.channel_num = '2'; ch2.name = None
+        ch4 = MagicMock(); ch4.channel_num = '4'; ch4.name = "Kitchen"
         ch_total = MagicMock(); ch_total.channel_num = '1,2,3'; ch_total.name = None
-        mock_device.channels = [ch1, ch2, ch_total]
+        mock_device.channels = [ch1, ch2, ch4, ch_total]
         
         def mock_fetch_ch(vue, channel, start_date, end_date, granularity, target_name=None):
             if target_name == "TOTAL":
@@ -178,8 +179,14 @@ class TestFetchDeviceData:
             elif target_name == "MyVue Phase 2":
                 return pd.DataFrame({
                     'instant': [datetime(2023,1,1)], 
-                    'MyVue Phase 2 (USD)': [0.3], 
-                    'MyVue Phase 2 (kWh)': [3.0]
+                    'MyVue Phase 2 (USD)': [0.2], 
+                    'MyVue Phase 2 (kWh)': [2.0]
+                })
+            elif target_name == "Kitchen":
+                return pd.DataFrame({
+                    'instant': [datetime(2023,1,1)], 
+                    'Kitchen (USD)': [0.1], 
+                    'Kitchen (kWh)': [1.0]
                 })
             return None
 
@@ -187,8 +194,8 @@ class TestFetchDeviceData:
         
         dfs = download_data.fetch_device_data(mock_vue, mock_device, date(2023,1,1), date(2023,1,2), "DAY")
         
-        # Should return 3 DataFrames: Mains, Phase 2, and Balance
-        assert len(dfs) == 3
+        # Should return 5 DataFrames: Mains, Phase 2, Kitchen, Balance, and [Total]
+        assert len(dfs) == 5
         
         # Check names
         all_cols = []
@@ -197,9 +204,11 @@ class TestFetchDeviceData:
         
         assert "Mains (USD)" in all_cols
         assert "MyVue Phase 2 (USD)" in all_cols
+        assert "Kitchen (USD)" in all_cols
         assert "MyVue balance (USD)" in all_cols
+        assert "[Total] MyVue (USD)" in all_cols
         
-        # Check balance calculation: 1.0 - (0.3 + 0.3) = 0.4
+        # Check balance calculation: 1.0 - (0.3 + 0.2 + 0.1) = 0.4
         balance_df = next(df for df in dfs if "MyVue balance (USD)" in df.columns)
         assert balance_df["MyVue balance (USD)"].iloc[0] == pytest.approx(0.4)
         assert balance_df["MyVue balance (kWh)"].iloc[0] == pytest.approx(4.0)
@@ -233,10 +242,11 @@ class TestFetchDeviceData:
         
         dfs = download_data.fetch_device_data(mock_vue, mock_device, date(2023,1,1), date(2023,1,2), "DAY")
         
-        # Should return only 1 DataFrame: Mains (Balance is 0)
-        assert len(dfs) == 1
-        assert "Mains (USD)" in dfs[0].columns
-        assert not any("Balance" in c for df in dfs for c in df.columns)
+        # Should return 2 DataFrames: Mains and [Total] (Balance is 0)
+        assert len(dfs) == 2
+        assert "Mains (USD)" in [c for df in dfs for c in df.columns]
+        assert "[Total] MyVue (USD)" in [c for df in dfs for c in df.columns]
+        assert not any("balance" in c.lower() for df in dfs for c in df.columns)
 
 class TestGetEmporiaDeviceInfo:
     def test_get_emporia_device_info_populates_properties(self):
