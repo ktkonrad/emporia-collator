@@ -121,6 +121,35 @@ class TestDownloadEmporiaData:
         assert 'Ch1 (USD)' in saved_df.columns
         assert 'Test Device (USD)' not in saved_df.columns
 
+    def test_all_channels_output(self):
+        """Test that --all_channels produces an additional CSV with sub-channels."""
+        self.mock_fetch_device_data.return_value = [
+            pd.DataFrame({'instant': [datetime(2023, 1, 1)], 'Ch1 (USD)': [0.1], 'Ch1 (kWh)': [0.5]}),
+            pd.DataFrame({'instant': [datetime(2023, 1, 1)], 'Ch2 (USD)': [0.2], 'Ch2 (kWh)': [1.0]})
+        ]
+        
+        download_data.download_emporia_data(
+            'email', 'pass', '2023-01-01', '2023-01-31', 'DAY', ["Test Device"],
+            all_channels=True
+        )
+        
+        # Check that save_data was called twice
+        assert self.mock_save.call_count == 2
+        
+        # First call should be for all_channels
+        all_channels_call = self.mock_save.call_args_list[0]
+        all_channels_df = all_channels_call[0][0]
+        assert all_channels_call[1]['suffix'] == '_all_channels'
+        assert 'Test Device (USD)' in all_channels_df.columns
+        assert '[sub] Ch1 (USD)' in all_channels_df.columns
+        assert '[sub] Ch2 (USD)' in all_channels_df.columns
+        
+        # Second call should be for normal output
+        normal_call = self.mock_save.call_args_list[1]
+        normal_df = normal_call[0][0]
+        assert 'Test Device (USD)' in normal_df.columns
+        assert 'Ch1 (USD)' not in normal_df.columns
+
 class TestFetchDeviceData:
     def test_fetch_device_data_naming_and_balance(self, monkeypatch):
         """Test that fetch_device_data uses correct naming rules and computes balance."""

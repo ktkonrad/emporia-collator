@@ -241,15 +241,15 @@ def save_to_google_sheet(df: pd.DataFrame, sheet_url: str, service_account_file:
         logging.error(f"Error saving to Google Sheet: {e}")
         return False
 
-def save_data(df: pd.DataFrame, reference_date: date, output_folder: str):
+def save_data(df: pd.DataFrame, reference_date: date, output_folder: str, suffix: str = ""):
     """Saves data to a CSV file."""
     if not os.path.exists(output_folder):
         os.makedirs(output_folder)
-    filename = f"{output_folder}/emporia_data_{reference_date.strftime('%Y-%m')}.csv"
+    filename = f"{output_folder}/emporia_data_{reference_date.strftime('%Y-%m')}{suffix}.csv"
     df.to_csv(filename, index=False)
     logging.info(f"Successfully saved device data to {filename}")
 
-def aggregate_data(df: pd.DataFrame, aggregation_map: Dict[str, List[str]]) -> pd.DataFrame:
+def aggregate_data(df: pd.DataFrame, aggregation_map: Dict[str, List[str]], keep_sub_channels: bool = False) -> pd.DataFrame:
     """Aggregates columns based on the provided map."""
     processed_df = pd.DataFrame({'instant': df['instant']})
     consumed_cols = set()
@@ -260,6 +260,11 @@ def aggregate_data(df: pd.DataFrame, aggregation_map: Dict[str, List[str]]) -> p
         
         if usd_cols: processed_df[f"{output_name} (USD)"] = df[usd_cols].sum(axis=1)
         if kwh_cols: processed_df[f"{output_name} (kWh)"] = df[kwh_cols].sum(axis=1)
+        
+        if keep_sub_channels:
+            for col in input_cols:
+                processed_df[f"[sub] {col}"] = df[col]
+                
         consumed_cols.update(input_cols)
             
     remaining_cols = [c for c in df.columns if c != 'instant' and c not in consumed_cols]
@@ -267,7 +272,7 @@ def aggregate_data(df: pd.DataFrame, aggregation_map: Dict[str, List[str]]) -> p
         processed_df[col] = df[col]
     return processed_df
 
-def download_emporia_data(email: str, password: str, start_date: Optional[str], end_date: Optional[str], granularity: str, aggregate_devices: List[str], output_all_channels: bool = False, output_folder: str = DEFAULT_OUTPUT_FOLDER, google_sheet_url: Optional[str] = None, service_account_file: Optional[str] = DEFAULT_SERVICE_ACCOUNT_FILE) -> bool:
+def download_emporia_data(email: str, password: str, start_date: Optional[str], end_date: Optional[str], granularity: str, aggregate_devices: List[str], output_all_channels: bool = False, all_channels: bool = False, output_folder: str = DEFAULT_OUTPUT_FOLDER, google_sheet_url: Optional[str] = None, service_account_file: Optional[str] = DEFAULT_SERVICE_ACCOUNT_FILE) -> bool:
     """Main orchestration function for downloading and saving data."""
     vue = authenticate(email, password)
     if not vue: return False
@@ -297,6 +302,14 @@ def download_emporia_data(email: str, password: str, start_date: Optional[str], 
     for i in range(1, len(all_dfs)):
         final_df = pd.merge(final_df, all_dfs[i], on='instant', how='outer')
     
+    if all_channels:
+        logging.info("Creating all channels output...")
+        all_channels_df = aggregate_data(final_df, aggregation_map, keep_sub_channels=True)
+        all_channels_totals = all_channels_df[[c for c in all_channels_df.columns if c != 'instant']].sum()
+        all_channels_totals_df = pd.DataFrame([all_channels_totals])
+        all_channels_totals_df.insert(0, 'Period', f"{s_date} to {e_date}")
+        save_data(all_channels_totals_df, e_date, output_folder, suffix='_all_channels')
+
     if not output_all_channels:
         logging.info("Aggregating data as configured...")
         final_df = aggregate_data(final_df, aggregation_map)
@@ -348,6 +361,7 @@ def main(args=None):
     parser.add_argument('-v', '--verbose', action='store_const', dest='verbosity', const='DEBUG', help='Verbose logging.')
     parser.add_argument('-q', '--quiet', action='store_const', dest='verbosity', const='WARNING', help='Quiet logging.')
     parser.add_argument('--output_all_channels', action='store_true', help='Output all individual channels, ignoring aggregation config.')
+    parser.add_argument('--all_channels', action='store_true', help='Output all individual channels as a separate CSV, with aggregated columns.')
     parsed_args = parser.parse_args(args)
 
     setup_logging(parsed_args.verbosity or 'INFO')
@@ -356,6 +370,7 @@ def main(args=None):
         sys.exit(1)
         
     config['output_all_channels'] = parsed_args.output_all_channels
+    config['all_channels'] = parsed_args.all_channels
     if not download_emporia_data(**config):
         sys.exit(1)
 
