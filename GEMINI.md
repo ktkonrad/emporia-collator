@@ -8,8 +8,6 @@ This project provides a Python script (`download_data.py`) to connect to the Emp
 - Fetches a list of all devices associated with your account.
 - Downloads usage data for each channel of each device for a specified period or the previous calendar month.
 - Supports multiple granularities: `MINUTE`, `HOUR`, or `DAY`.
-- **Intelligent Aggregation**: Can sum all channels of a device into a single column based on configuration.
-- **Balance Calculation**: Automatically computes a "Balance" channel to capture usage not accounted for by individual sensors.
 - **Timezone Support**: Handles data in the `America/Los_Angeles` timezone, converting to UTC for API requests and back to local time for output.
 - **Performance Optimized**: Skips unnamed channels (ports with no CT attached) to speed up data fetching.
 - **Multiple Output Formats**: Saves data to local CSV files and can optionally append results to a Google Sheet.
@@ -33,7 +31,7 @@ All timestamps and date ranges are treated as **America/Los_Angeles** local time
 ### Mapping to Web & API
 -   **Web Interface**: Shows a "Total" usage (from the `1,2,3` pseudochannel), each individual channel's usage, and a "Balance" which is calculated as `Total - sum(all monitored channels)`.
 -   **API**: Provides data for individual channels (1, 2, 3, 4+) and the aggregate `1,2,3` pseudochannel.
--   **This Script**: For each device, always fetches the `1,2,3` pseudochannel data and computes the "balance" channel locally. This ensures that the output reflects the same data model seen in the web interface and accurately captures all energy usage. When using `--all_channels` or `--skip_aggregation`, the raw `1,2,3` data is also included as a `[Total]` column for verification.
+-   **This Script**: For each device, always fetches the `1,2,3` pseudochannel data and computes the "balance" channel locally. This ensures that the output reflects the same data model seen in the web interface and accurately captures all energy usage.
 
 ## Setup
 
@@ -58,8 +56,6 @@ All timestamps and date ranges are treated as **America/Los_Angeles** local time
       start_date: YYYY-MM-DD
       end_date: YYYY-MM-DD
       granularity: DAY
-    aggregate_devices:
-      - "Device Name 1"
     output:
       google_sheet_url: "https://docs.google.com/spreadsheets/d/your_sheet_id/edit#gid=your_gid"
       service_account_file: "service_account.json"
@@ -74,17 +70,20 @@ uv run download_data.py [options]
 ```
 
 ### Options
--   `--all_channels`: Generates an additional CSV file with a `_all_channels` suffix. This file includes both the aggregated device totals AND individual sub-channels (prefixed with `[sub] `). It also includes a raw `[Total]` column for verification.
--   `--skip_aggregation`: Disables aggregation entirely in the main output. Every named channel is output as its own column.
+-   `--output_totals`: Include raw `[Total]` columns for each device in the output (useful for verification).
 -   `-v`, `--verbose`: Enables detailed debug logging.
 -   `-q`, `--quiet`: Only logs warnings and errors.
 
 ## Output Files
 Data is saved in the `emporia_data/` directory:
-- `emporia_data_YYYY-MM.csv`: The main output file, aggregated according to `config.yaml`.
-- `emporia_data_YYYY-MM_all_channels.csv`: (Optional) Detailed report containing all individual channels.
+- `emporia_data_YYYY-MM.csv`: The output file containing usage data and totals.
+
+### Column Naming Convention
+Columns are named using the format: `{Device Name}: {Channel Name} ({Unit})`
+- **Example**: `Kitchen Vue: Refrigerator (kWh)`
+- **Calculated Balance**: `Kitchen Vue: Balance (USD)`
+- **Raw Totals** (if `--output_totals` is used): `Kitchen Vue: [Total] (kWh)`
 
 ## Troubleshooting
-- **Discrepancies with Web App**: Ensure your `aggregate_devices` list matches your expectations. Use `--all_channels` to compare the `[Total]` column (raw API data) against the calculated balance and components.
 - **Empty Channels**: The script only fetches data for **named** channels. If a circuit is missing, ensure it has a name assigned in the Emporia mobile app.
 - **Login Issues**: Ensure outbound connections to `cognito-idp.us-east-2.amazonaws.com` are allowed.

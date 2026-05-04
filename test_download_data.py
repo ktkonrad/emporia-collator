@@ -49,13 +49,10 @@ class TestLoadConfig:
           start_date: 2023-01-01
           end_date: 2023-01-31
           granularity: HOURS
-        aggregate_devices:
-          - Device 1
         """
         config_path = mock_config_file(config_content)
         settings = download_data.load_config(config_file=str(config_path))
         assert settings['email'] == 'user@example.com'
-        assert settings['aggregate_devices'] == ['Device 1']
 
 class TestDownloadEmporiaData:
     @pytest.fixture(autouse=True)
@@ -76,8 +73,8 @@ class TestDownloadEmporiaData:
 
         self.mock_fetch_device_data = MagicMock(return_value=[pd.DataFrame({
             'instant': [datetime(2023, 1, 1)], 
-            'Channel 1 (USD)': [0.1],
-            'Channel 1 (kWh)': [0.5]
+            'Test Device: Channel 1 (USD)': [0.1],
+            'Test Device: Channel 1 (kWh)': [0.5]
         })])
         monkeypatch.setattr(download_data, 'fetch_device_data', self.mock_fetch_device_data)
 
@@ -87,71 +84,44 @@ class TestDownloadEmporiaData:
         self.mock_get_default_dates = MagicMock(return_value=(date(2023, 1, 27), date(2023, 2, 26)))
         monkeypatch.setattr(download_data, 'get_default_dates', self.mock_get_default_dates)
 
-    def test_aggregation_logic(self):
-        """Test that aggregation correctly sums columns."""
-        # Device 1 has two channels
+    def test_basic_download_logic(self):
+        """Test that data is fetched and saved correctly."""
+        # Device 1 has one channel
         self.mock_fetch_device_data.return_value = [
-            pd.DataFrame({'instant': [datetime(2023, 1, 1)], 'Ch1 (USD)': [0.1], 'Ch1 (kWh)': [0.5]}),
-            pd.DataFrame({'instant': [datetime(2023, 1, 1)], 'Ch2 (USD)': [0.2], 'Ch2 (kWh)': [1.0]})
+            pd.DataFrame({'instant': [datetime(2023, 1, 1)], 'Test Device: Ch1 (USD)': [0.1], 'Test Device: Ch1 (kWh)': [0.5]})
         ]
         
         download_data.download_emporia_data(
             email='email', password='pass', start_date_str='2023-01-01', end_date_str='2023-01-31', 
-            granularity='DAY', aggregate_devices=["Test Device"]
+            granularity='DAY'
         )
         
         saved_df = self.mock_save.call_args[0][0]
-        assert 'Test Device (USD)' in saved_df.columns
-        assert 'Test Device (kWh)' in saved_df.columns
-        assert saved_df['Test Device (USD)'].iloc[0] == pytest.approx(0.3)
-        assert saved_df['Test Device (kWh)'].iloc[0] == pytest.approx(1.5)
-        assert 'Ch1 (USD)' not in saved_df.columns
+        assert 'Test Device: Ch1 (USD)' in saved_df.columns
+        assert saved_df['Test Device: Ch1 (USD)'].iloc[0] == pytest.approx(0.1)
 
-    def test_skip_aggregation(self):
-        """Test that --skip_aggregation skips aggregation."""
+    def test_output_totals_flag(self):
+        """Test that --output_totals includes the raw [Total] columns."""
         self.mock_fetch_device_data.return_value = [
-            pd.DataFrame({'instant': [datetime(2023, 1, 1)], 'Ch1 (USD)': [0.1], 'Ch1 (kWh)': [0.5]})
+            pd.DataFrame({'instant': [datetime(2023, 1, 1)], 'Test Device: Ch1 (USD)': [0.1], 'Test Device: Ch1 (kWh)': [0.5]}),
+            pd.DataFrame({'instant': [datetime(2023, 1, 1)], 'Test Device: [Total] (USD)': [0.1], 'Test Device: [Total] (kWh)': [0.5]})
         ]
         
+        # Test without flag (default)
         download_data.download_emporia_data(
             email='email', password='pass', start_date_str='2023-01-01', end_date_str='2023-01-31', 
-            granularity='DAY', aggregate_devices=["Test Device"],
-            skip_aggregation=True
+            granularity='DAY', output_totals=False
         )
-        
         saved_df = self.mock_save.call_args[0][0]
-        assert 'Ch1 (USD)' in saved_df.columns
-        assert 'Test Device (USD)' not in saved_df.columns
-
-    def test_all_channels_output(self):
-        """Test that --all_channels produces an additional CSV with sub-channels."""
-        self.mock_fetch_device_data.return_value = [
-            pd.DataFrame({'instant': [datetime(2023, 1, 1)], 'Ch1 (USD)': [0.1], 'Ch1 (kWh)': [0.5]}),
-            pd.DataFrame({'instant': [datetime(2023, 1, 1)], 'Ch2 (USD)': [0.2], 'Ch2 (kWh)': [1.0]})
-        ]
+        assert 'Test Device: [Total] (USD)' not in saved_df.columns
         
+        # Test with flag
         download_data.download_emporia_data(
             email='email', password='pass', start_date_str='2023-01-01', end_date_str='2023-01-31', 
-            granularity='DAY', aggregate_devices=["Test Device"],
-            all_channels=True
+            granularity='DAY', output_totals=True
         )
-        
-        # Check that save_data was called twice
-        assert self.mock_save.call_count == 2
-        
-        # First call should be for all_channels
-        all_channels_call = self.mock_save.call_args_list[0]
-        all_channels_df = all_channels_call[0][0]
-        assert all_channels_call[1]['suffix'] == '_all_channels'
-        assert 'Test Device (USD)' in all_channels_df.columns
-        assert '[sub] Ch1 (USD)' in all_channels_df.columns
-        assert '[sub] Ch2 (USD)' in all_channels_df.columns
-        
-        # Second call should be for normal output
-        normal_call = self.mock_save.call_args_list[1]
-        normal_df = normal_call[0][0]
-        assert 'Test Device (USD)' in normal_df.columns
-        assert 'Ch1 (USD)' not in normal_df.columns
+        saved_df = self.mock_save.call_args[0][0]
+        assert 'Test Device: [Total] (USD)' in saved_df.columns
 
 class TestFetchDeviceData:
     def test_fetch_device_data_naming_and_balance(self, monkeypatch):
@@ -174,17 +144,17 @@ class TestFetchDeviceData:
                     'TOTAL (USD)': [1.0], 
                     'TOTAL (kWh)': [10.0]
                 })
-            elif target_name == "Mains":
+            elif target_name == "MyVue: Mains":
                 return pd.DataFrame({
                     'instant': [datetime(2023,1,1)], 
-                    'Mains (USD)': [0.4], 
-                    'Mains (kWh)': [4.0]
+                    'MyVue: Mains (USD)': [0.4], 
+                    'MyVue: Mains (kWh)': [4.0]
                 })
-            elif target_name == "Kitchen":
+            elif target_name == "MyVue: Kitchen":
                 return pd.DataFrame({
                     'instant': [datetime(2023,1,1)], 
-                    'Kitchen (USD)': [0.2], 
-                    'Kitchen (kWh)': [2.0]
+                    'MyVue: Kitchen (USD)': [0.2], 
+                    'MyVue: Kitchen (kWh)': [2.0]
                 })
             return None
 
@@ -201,15 +171,15 @@ class TestFetchDeviceData:
         for df in dfs:
             all_cols.extend([c for c in df.columns if c != 'instant'])
         
-        assert "Mains (USD)" in all_cols
-        assert "Kitchen (USD)" in all_cols
-        assert "MyVue balance (USD)" in all_cols
-        assert "[Total] MyVue (USD)" in all_cols
+        assert "MyVue: Mains (USD)" in all_cols
+        assert "MyVue: Kitchen (USD)" in all_cols
+        assert "MyVue: Balance (USD)" in all_cols
+        assert "MyVue: [Total] (USD)" in all_cols
         
         # Check balance calculation: 1.0 - (0.4 + 0.2) = 0.4
-        balance_df = next(df for df in dfs if "MyVue balance (USD)" in df.columns)
-        assert balance_df["MyVue balance (USD)"].iloc[0] == pytest.approx(0.4)
-        assert balance_df["MyVue balance (kWh)"].iloc[0] == pytest.approx(4.0)
+        balance_df = next(df for df in dfs if "MyVue: Balance (USD)" in df.columns)
+        assert balance_df["MyVue: Balance (USD)"].iloc[0] == pytest.approx(0.4)
+        assert balance_df["MyVue: Balance (kWh)"].iloc[0] == pytest.approx(4.0)
 
     def test_fetch_device_data_no_balance_if_zero(self, monkeypatch):
         """Test that balance channel is omitted if it is effectively zero."""
@@ -228,11 +198,11 @@ class TestFetchDeviceData:
                     'TOTAL (USD)': [1.0], 
                     'TOTAL (kWh)': [10.0]
                 })
-            elif target_name == "Mains":
+            elif target_name == "MyVue: Mains":
                 return pd.DataFrame({
                     'instant': [datetime(2023,1,1)], 
-                    'Mains (USD)': [1.0], 
-                    'Mains (kWh)': [10.0]
+                    'MyVue: Mains (USD)': [1.0], 
+                    'MyVue: Mains (kWh)': [10.0]
                 })
             return None
 
@@ -242,8 +212,8 @@ class TestFetchDeviceData:
         
         # Should return 2 DataFrames: Mains and [Total] (Balance is 0)
         assert len(dfs) == 2
-        assert "Mains (USD)" in [c for df in dfs for c in df.columns]
-        assert "[Total] MyVue (USD)" in [c for df in dfs for c in df.columns]
+        assert "MyVue: Mains (USD)" in [c for df in dfs for c in df.columns]
+        assert "MyVue: [Total] (USD)" in [c for df in dfs for c in df.columns]
         assert not any("balance" in c.lower() for df in dfs for c in df.columns)
 
 class TestGetEmporiaDeviceInfo:
@@ -339,8 +309,8 @@ class TestFetchChannelData:
         assert df['instant'].iloc[0].hour == 0
         assert df['instant'].iloc[0].day == 1
 
-def test_csv_output_header_aggregated(tmp_path, monkeypatch):
-    """Integration test for aggregated output header."""
+def test_csv_output_header(tmp_path, monkeypatch):
+    """Integration test for output header."""
     mock_auth = MagicMock()
     mock_vue_instance = MagicMock()
     mock_auth.return_value = mock_vue_instance
@@ -364,9 +334,9 @@ def test_csv_output_header_aggregated(tmp_path, monkeypatch):
     output_folder = tmp_path / "emporia_data"
     download_data.download_emporia_data(
         email='test@example.com', password='pass', start_date_str=None, end_date_str=None, 
-        granularity='DAY', aggregate_devices=["Test Device"], output_folder=str(output_folder)
+        granularity='DAY', output_folder=str(output_folder)
     )
 
     csv_file_path = output_folder / "emporia_data_2023-02.csv"
     df = pd.read_csv(csv_file_path)
-    assert 'Test Device (USD)' in df.columns
+    assert 'Test Device: Ch1 (USD)' in df.columns

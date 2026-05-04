@@ -34,12 +34,6 @@ jobs:
             password: "$PASS"
           data:
             granularity: DAY
-          aggregate_devices:
-            - "Amador Yurt"
-            - "The Toad"
-            - "The Big Yurt"
-            - "Singing Pines Hub"
-            - "Small Cabin Hub"
           output:
             google_sheet_url: https://docs.google.com/spreadsheets/d/1maoCrZuzxQJB8beHq6o9_677UvjJ1khtWLITaRIT_iE/edit?gid=141030202#gid=141030202
             service_account_file: service-account.json

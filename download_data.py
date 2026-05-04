@@ -99,10 +99,7 @@ def fetch_channel_data(vue: PyEmVue, channel: Any, start_date: date, end_date: d
         return None
         
     # Determine the display name for the channel
-    is_main_phase = ch_num_str in ['1', '2', '3']
-    ch_display_name = target_name or channel.name
-    if not ch_display_name:
-        ch_display_name = f"Main ({ch_num_str})" if is_main_phase else f"Channel {ch_num_str}"
+    ch_display_name = target_name or channel.name or f"Channel {ch_num_str}"
 
     logging.info(f"  Fetching: {ch_display_name} (Channel {ch_num_str})")
     
@@ -160,7 +157,7 @@ def compute_balance(device_name: str, total_df: pd.DataFrame, monitored_dfs: Lis
     if total_df is None:
         return None
         
-    balance_name = f"{device_name} balance"
+    balance_name = f"{device_name}: Balance"
     
     # Start with the total as the baseline
     combined_df = total_df[['instant']].copy()
@@ -216,7 +213,8 @@ def fetch_device_data(vue: PyEmVue, device: Any, s_date: date, e_date: date, gra
     # 4. Fetch usage for all individual monitored channels
     component_dfs = []
     for ch in monitored_channels:
-        df = fetch_channel_data(vue, ch, s_date, e_date, granularity, target_name=ch.name)
+        display_name = f"{device.device_name}: {ch.name}"
+        df = fetch_channel_data(vue, ch, s_date, e_date, granularity, target_name=display_name)
         if df is not None:
             component_dfs.append(df)
             
@@ -231,7 +229,7 @@ def fetch_device_data(vue: PyEmVue, device: Any, s_date: date, e_date: date, gra
     if total_df is not None:
         # Include a raw 'Total' column for verification (prefixed to avoid accidental aggregation)
         raw_total_df = total_df.copy()
-        raw_total_df.columns = ['instant', f'[Total] {device.device_name} (USD)', f'[Total] {device.device_name} (kWh)']
+        raw_total_df.columns = ['instant', f"{device.device_name}: [Total] (USD)", f"{device.device_name}: [Total] (kWh)"]
         results.append(raw_total_df)
             
     return results
@@ -293,38 +291,7 @@ def save_data(df: pd.DataFrame, reference_date: date, output_folder: str, suffix
     df.to_csv(filename, index=False)
     logging.info(f"Saved: {filename}")
 
-def aggregate_data(df: pd.DataFrame, aggregation_map: Dict[str, List[str]], keep_sub_channels: bool = False) -> pd.DataFrame:
-    """
-    Collapses multiple columns into device totals based on the aggregation_map.
-    If keep_sub_channels is True, individual components are preserved with a '[sub] ' prefix.
-    """
-    processed_df = pd.DataFrame({'instant': df['instant']})
-    consumed_cols = set()
-    
-    # 1. Process Aggregations
-    for device_name, input_cols in aggregation_map.items():
-        usd_cols = [c for c in input_cols if '(USD)' in c]
-        kwh_cols = [c for c in input_cols if '(kWh)' in c]
-        
-        # Create aggregated columns
-        if usd_cols: processed_df[f"{device_name} (USD)"] = df[usd_cols].sum(axis=1)
-        if kwh_cols: processed_df[f"{device_name} (kWh)"] = df[kwh_cols].sum(axis=1)
-        
-        # Optionally keep individual channels as 'sub' columns
-        if keep_sub_channels:
-            for col in input_cols:
-                processed_df[f"[sub] {col}"] = df[col]
-                
-        consumed_cols.update(input_cols)
-            
-    # 2. Append non-aggregated columns (standalone devices)
-    remaining_cols = [c for c in df.columns if c != 'instant' and c not in consumed_cols]
-    for col in remaining_cols:
-        processed_df[col] = df[col]
-        
-    return processed_df
-
-def download_emporia_data(email: str, password: str, start_date_str: Optional[str], end_date_str: Optional[str], granularity: str, aggregate_devices: List[str], skip_aggregation: bool = False, all_channels: bool = False, output_folder: str = DEFAULT_OUTPUT_FOLDER, google_sheet_url: Optional[str] = None, service_account_file: Optional[str] = DEFAULT_SERVICE_ACCOUNT_FILE) -> bool:
+def download_emporia_data(email: str, password: str, start_date_str: Optional[str], end_date_str: Optional[str], granularity: str, output_folder: str = DEFAULT_OUTPUT_FOLDER, google_sheet_url: Optional[str] = None, service_account_file: Optional[str] = DEFAULT_SERVICE_ACCOUNT_FILE, output_totals: bool = False) -> bool:
     """
     The main orchestration function.
     1. Authenticates
@@ -356,21 +323,12 @@ def download_emporia_data(email: str, password: str, start_date_str: Optional[st
 
     # 4. Fetch data for all discovered devices
     all_dfs = []
-    aggregation_map: Dict[str, List[str]] = {}
 
     for device in device_info.values():
         device_dfs = fetch_device_data(vue, device, s_date, e_date, granularity)
         if not device_dfs: continue
             
         all_dfs.extend(device_dfs)
-        
-        # Prepare the map for later aggregation if requested
-        if device.device_name in aggregate_devices:
-            # We aggregate everything EXCEPT the raw [Total] debug columns
-            aggregation_map[device.device_name] = [
-                c for df in device_dfs for c in df.columns 
-                if c != 'instant' and not c.startswith('[Total]')
-            ]
 
     if not all_dfs:
         logging.warning("No data was retrieved for the specified period.")
@@ -382,34 +340,19 @@ def download_emporia_data(email: str, password: str, start_date_str: Optional[st
     for i in range(1, len(all_dfs)):
         final_df = pd.merge(final_df, all_dfs[i], on='instant', how='outer')
     
-    # 6. Handle 'All Channels' Output (Secondary CSV)
-    if all_channels:
-        logging.info("Generating 'All Channels' report...")
-        all_channels_df = aggregate_data(final_df, aggregation_map, keep_sub_channels=True)
-        # We save a single summary row (totals over the period)
-        all_channels_totals = all_channels_df[[c for c in all_channels_df.columns if c != 'instant']].sum()
-        all_channels_summary = pd.DataFrame([all_channels_totals])
-        all_channels_summary.insert(0, 'Period', f"{s_date} to {e_date}")
-        save_data(all_channels_summary, e_date, output_folder, suffix='_all_channels')
-
-    # 7. Handle Main Output Aggregation
-    if not skip_aggregation:
-        logging.info("Applying aggregation rules...")
-        final_df = aggregate_data(final_df, aggregation_map)
-        
-    # Remove internal [Total] debug columns from final output unless specifically requested
-    if not (all_channels or skip_aggregation):
-        cols_to_keep = [c for c in final_df.columns if not c.startswith('[Total]')]
+    # 6. Remove internal [Total] debug columns from final output unless requested
+    if not output_totals:
+        cols_to_keep = [c for c in final_df.columns if '[Total]' not in c]
         final_df = final_df[cols_to_keep]
 
-    # 8. Calculate and Save Totals
+    # 7. Calculate and Save Totals
     totals = final_df[[c for c in final_df.columns if c != 'instant']].sum()
     totals_df = pd.DataFrame([totals])
     totals_df.insert(0, 'Period', f"{s_date} to {e_date}")
     
     save_data(totals_df, e_date, output_folder)
     
-    # 9. Optional Google Sheets Upload
+    # 8. Optional Google Sheets Upload
     if google_sheet_url:
         return save_to_google_sheet(totals_df, google_sheet_url, service_account_file)
     return True
@@ -436,7 +379,6 @@ def load_config(config_file: str = DEFAULT_CONFIG_FILE) -> Optional[Dict[str, An
             'start_date_str': fmt_date(data_cfg.get('start_date')),
             'end_date_str': fmt_date(data_cfg.get('end_date')),
             'granularity': data_cfg.get('granularity', 'DAY').upper(),
-            'aggregate_devices': config.get('aggregate_devices', []),
             'google_sheet_url': config.get('output', {}).get('google_sheet_url'),
             'service_account_file': config.get('output', {}).get('service_account_file', DEFAULT_SERVICE_ACCOUNT_FILE)
         }
@@ -455,8 +397,7 @@ def main(args=None):
     parser = argparse.ArgumentParser(description='Download and process Emporia Energy usage data.')
     parser.add_argument('-v', '--verbose', action='store_const', dest='verbosity', const='DEBUG', help='Enable debug logging.')
     parser.add_argument('-q', '--quiet', action='store_const', dest='verbosity', const='WARNING', help='Only log warnings and errors.')
-    parser.add_argument('--skip_aggregation', action='store_true', help='Disable device aggregation; output all named channels.')
-    parser.add_argument('--all_channels', action='store_true', help='Generate a separate detailed CSV with both totals and sub-channels.')
+    parser.add_argument('--output_totals', action='store_true', help='Include raw [Total] columns for each device in the output.')
     parsed_args = parser.parse_args(args)
 
     setup_logging(parsed_args.verbosity or 'INFO')
@@ -465,9 +406,8 @@ def main(args=None):
     if not config:
         sys.exit(1)
         
-    # Override/Apply CLI flags
-    config['skip_aggregation'] = parsed_args.skip_aggregation
-    config['all_channels'] = parsed_args.all_channels
+    # Apply CLI flags
+    config['output_totals'] = parsed_args.output_totals
     
     if not download_emporia_data(**config):
         sys.exit(1)
