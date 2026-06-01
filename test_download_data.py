@@ -201,11 +201,11 @@ class TestFetchDeviceData:
         mock_device = MagicMock()
         mock_device.device_name = "MyVue"
         
-        ch1 = MagicMock(); ch1.channel_num = '1'; ch1.name = "Mains"; ch1.parent_channel_num = None
-        ch2 = MagicMock(); ch2.channel_num = '2'; ch2.name = None; ch2.parent_channel_num = None
-        ch4 = MagicMock(); ch4.channel_num = '4'; ch4.name = "Kitchen"; ch4.parent_channel_num = None
-        ch5 = MagicMock(); ch5.channel_num = '5'; ch5.name = "Empty"; ch5.parent_channel_num = None
-        ch_total = MagicMock(); ch_total.channel_num = '1,2,3'; ch_total.name = None; ch_total.parent_channel_num = None
+        ch1 = MagicMock(); ch1.channel_num = '1'; ch1.name = "Mains"; ch1.parent_channel_num = None; ch1.type = 'Main'
+        ch2 = MagicMock(); ch2.channel_num = '2'; ch2.name = None; ch2.parent_channel_num = None; ch2.type = 'Main'
+        ch4 = MagicMock(); ch4.channel_num = '4'; ch4.name = "Kitchen"; ch4.parent_channel_num = None; ch4.type = 'FiftyAmp'
+        ch5 = MagicMock(); ch5.channel_num = '5'; ch5.name = "Empty"; ch5.parent_channel_num = None; ch5.type = 'FiftyAmp'
+        ch_total = MagicMock(); ch_total.channel_num = '1,2,3'; ch_total.name = None; ch_total.parent_channel_num = None; ch_total.type = 'Main'
         mock_device.channels = [ch1, ch2, ch4, ch_total]
         
         def mock_fetch_ch(vue, channel, start_date, end_date, granularity, target_name=None):
@@ -259,8 +259,8 @@ class TestFetchDeviceData:
         mock_device = MagicMock()
         mock_device.device_name = "MyVue"
         
-        ch1 = MagicMock(); ch1.channel_num = '1'; ch1.name = "Mains"; ch1.parent_channel_num = None
-        ch_total = MagicMock(); ch_total.channel_num = '1,2,3'; ch_total.name = None; ch_total.parent_channel_num = None
+        ch1 = MagicMock(); ch1.channel_num = '1'; ch1.name = "Mains"; ch1.parent_channel_num = None; ch1.type = 'Main'
+        ch_total = MagicMock(); ch_total.channel_num = '1,2,3'; ch_total.name = None; ch_total.parent_channel_num = None; ch_total.type = 'Main'
         mock_device.channels = [ch1, ch_total]
         
         def mock_fetch_ch(vue, channel, start_date, end_date, granularity, target_name=None):
@@ -303,12 +303,12 @@ class TestFetchDeviceData:
         mock_device.device_name = "Small Cabin Hub"
         
         # Mains
-        ch1 = MagicMock(); ch1.channel_num = '1'; ch1.name = "Mains L1"; ch1.parent_channel_num = None
-        ch2 = MagicMock(); ch2.channel_num = '2'; ch2.name = "Mains L2"; ch2.parent_channel_num = None
+        ch1 = MagicMock(); ch1.channel_num = '1'; ch1.name = "Mains L1"; ch1.parent_channel_num = None; ch1.type = 'Main'
+        ch2 = MagicMock(); ch2.channel_num = '2'; ch2.name = "Mains L2"; ch2.parent_channel_num = None; ch2.type = 'Main'
         # Expansion
-        ch4 = MagicMock(); ch4.channel_num = '4'; ch4.name = "Kitchen"; ch4.parent_channel_num = None
+        ch4 = MagicMock(); ch4.channel_num = '4'; ch4.name = "Kitchen"; ch4.parent_channel_num = None; ch4.type = 'FiftyAmp'
         # Aggregate
-        ch_total = MagicMock(); ch_total.channel_num = '1,2,3'; ch_total.name = None; ch_total.parent_channel_num = None
+        ch_total = MagicMock(); ch_total.channel_num = '1,2,3'; ch_total.name = None; ch_total.parent_channel_num = None; ch_total.type = 'Main'
         
         mock_device.channels = [ch1, ch2, ch4, ch_total]
         
@@ -376,6 +376,39 @@ class TestFetchDeviceData:
         assert "GlassHaus Hub: Circuits 1 & 6 (kWh)" in all_cols
         assert "GlassHaus Hub: GlassHaus1 (kWh)" in all_cols
         assert "GlassHaus Hub: GlassHaus2 (kWh)" in all_cols
+
+    def test_fetch_device_data_expansion_overlap(self, monkeypatch):
+        """
+        Test the scenario where expansion channels have the same numbers as mains (1, 2, 3).
+        They should still be subtracted from the total if their type is 'FiftyAmp'.
+        """
+        mock_vue = MagicMock()
+        mock_device = MagicMock()
+        mock_device.device_name = "Amador Yurt"
+        
+        # Main Aggregate
+        ch_total = MagicMock(); ch_total.channel_num = '1,2,3'; ch_total.name = None; ch_total.parent_channel_num = None; ch_total.type = 'Main'
+        # Expansion Channels (same numbers as mains)
+        ch1 = MagicMock(); ch1.channel_num = '1'; ch1.name = "Kitchen Right"; ch1.parent_channel_num = None; ch1.type = 'FiftyAmp'
+        ch2 = MagicMock(); ch2.channel_num = '2'; ch2.name = "Kitchen Left"; ch2.parent_channel_num = None; ch2.type = 'FiftyAmp'
+        
+        mock_device.channels = [ch_total, ch1, ch2]
+        
+        def mock_fetch_ch(vue, channel, start_date, end_date, granularity, target_name=None):
+            val = 10.0 if target_name == "TOTAL" else 2.0
+            return pd.DataFrame({
+                'instant': [datetime(2023,1,1)], 
+                f'{target_name or "Ch"} (USD)': [val/10.0], 
+                f'{target_name or "Ch"} (kWh)': [val]
+            })
+
+        monkeypatch.setattr(download_data, 'fetch_channel_data', mock_fetch_ch)
+        
+        dfs = download_data.fetch_device_data(mock_vue, mock_device, date(2023,1,1), date(2023,1,2), "DAY")
+        
+        # Balance should be: Total (10) - Expansion1 (2) - Expansion2 (2) = 6.0
+        balance_df = next(df for df in dfs if "Amador Yurt: Balance (kWh)" in df.columns)
+        assert balance_df["Amador Yurt: Balance (kWh)"].iloc[0] == pytest.approx(6.0)
 
 class TestGetEmporiaDeviceInfo:
     def test_get_emporia_device_info_populates_properties(self):

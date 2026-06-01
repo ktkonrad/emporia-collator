@@ -254,14 +254,13 @@ def fetch_device_data(vue: PyEmVue, device: Any, s_date: date, e_date: date, gra
         if df is not None:
             results.append(df)
             # Only subtract expansion channels from the total to compute balance.
-            # Channels 1, 2, and 3 are the 'Mains' and are already included in the '1,2,3' total.
+            # Channels with type 'Main' are the sources (200A clamps) and should not be 
+            # subtracted from the aggregate total to find the unmonitored balance.
             # Additionally, only subtract channels that do NOT have a parent_channel_num.
-            # If a channel has a parent, its usage is already accounted for by the parent channel.
-            ch_num_str = str(ch.channel_num)
-            is_main = ch_num_str in ['1', '2', '3']
+            is_main_type = getattr(ch, 'type', None) == 'Main'
             has_parent = getattr(ch, 'parent_channel_num', None) is not None
             
-            if not is_main and not has_parent:
+            if not is_main_type and not has_parent:
                 circuit_dfs.append(df)
             
     # Fetch and compute balance if total channel exists
