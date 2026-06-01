@@ -158,10 +158,10 @@ class TestDownloadEmporiaData:
         assert self.mock_save.call_count == 2
         # Check first month
         saved_df_1 = self.mock_save.call_args_list[0][0][0]
-        assert saved_df_1['Period'].iloc[0] == "2023-01-01 to 2023-01-31"
+        assert saved_df_1['Period'].iloc[0] == "2023-01"
         # Check second month
         saved_df_2 = self.mock_save.call_args_list[1][0][0]
-        assert saved_df_2['Period'].iloc[0] == "2023-02-01 to 2023-02-28"
+        assert saved_df_2['Period'].iloc[0] == "2023-02"
 
     def test_output_totals_flag(self):
         """Test that --output_totals includes the raw [Total] columns."""

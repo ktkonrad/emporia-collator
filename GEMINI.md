@@ -79,7 +79,7 @@ Data is saved in the `emporia_data/` directory:
 - `emporia_data_YYYY-MM.csv`: The output file containing usage data and totals.
 
 ### Column Naming Convention
-Columns are named using the format: `{Device Name}: {Channel Name} ({Unit})`
+The first column is always **Period**, formatted as `YYYY-MM`. Other columns are named using the format: `{Device Name}: {Channel Name} ({Unit})`
 - **Example**: `Kitchen Vue: Refrigerator (kWh)`
 - **Calculated Balance**: `Kitchen Vue: Balance (USD)`
 - **Raw Totals** (if `--output_totals` is used): `Kitchen Vue: [Total] (kWh)`

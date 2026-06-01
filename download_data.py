@@ -377,7 +377,7 @@ def download_emporia_data(email: str, password: str, date_ranges: List[Tuple[dat
         # 7. Calculate and Save Totals for this month
         totals = final_df[[c for c in final_df.columns if c != 'instant']].sum()
         totals_df = pd.DataFrame([totals])
-        totals_df.insert(0, 'Period', f"{s_date} to {e_date}")
+        totals_df.insert(0, 'Period', s_date.strftime('%Y-%m'))
         
         save_data(totals_df, e_date, output_folder)
         all_month_totals.append(totals_df)
