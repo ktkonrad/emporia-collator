@@ -96,6 +96,12 @@ def get_emporia_device_info(vue: PyEmVue) -> Optional[Dict[int, Any]]:
             vue.populate_device_properties(device)
             gid = device.device_gid
             
+            logging.info(f"Device Discovery: {device.device_name} (GID: {gid}, Model: {device.model})")
+            for ch in device.channels:
+                # Log all attributes of the channel for debugging balance logic
+                attrs = {k: v for k, v in vars(ch).items() if not k.startswith('_')}
+                logging.info(f"  Channel {ch.channel_num}: {ch.name} -> {attrs}")
+            
             if gid not in device_info:
                 device_info[gid] = device
             else:
@@ -249,8 +255,13 @@ def fetch_device_data(vue: PyEmVue, device: Any, s_date: date, e_date: date, gra
             results.append(df)
             # Only subtract expansion channels from the total to compute balance.
             # Channels 1, 2, and 3 are the 'Mains' and are already included in the '1,2,3' total.
+            # Additionally, only subtract channels that do NOT have a parent_channel_num.
+            # If a channel has a parent, its usage is already accounted for by the parent channel.
             ch_num_str = str(ch.channel_num)
-            if ch_num_str not in ['1', '2', '3']:
+            is_main = ch_num_str in ['1', '2', '3']
+            has_parent = getattr(ch, 'parent_channel_num', None) is not None
+            
+            if not is_main and not has_parent:
                 circuit_dfs.append(df)
             
     # Fetch and compute balance if total channel exists

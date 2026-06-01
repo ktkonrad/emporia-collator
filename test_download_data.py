@@ -201,11 +201,11 @@ class TestFetchDeviceData:
         mock_device = MagicMock()
         mock_device.device_name = "MyVue"
         
-        ch1 = MagicMock(); ch1.channel_num = '1'; ch1.name = "Mains"
-        ch2 = MagicMock(); ch2.channel_num = '2'; ch2.name = None
-        ch4 = MagicMock(); ch4.channel_num = '4'; ch4.name = "Kitchen"
-        ch5 = MagicMock(); ch5.channel_num = '5'; ch5.name = "Empty"
-        ch_total = MagicMock(); ch_total.channel_num = '1,2,3'; ch_total.name = None
+        ch1 = MagicMock(); ch1.channel_num = '1'; ch1.name = "Mains"; ch1.parent_channel_num = None
+        ch2 = MagicMock(); ch2.channel_num = '2'; ch2.name = None; ch2.parent_channel_num = None
+        ch4 = MagicMock(); ch4.channel_num = '4'; ch4.name = "Kitchen"; ch4.parent_channel_num = None
+        ch5 = MagicMock(); ch5.channel_num = '5'; ch5.name = "Empty"; ch5.parent_channel_num = None
+        ch_total = MagicMock(); ch_total.channel_num = '1,2,3'; ch_total.name = None; ch_total.parent_channel_num = None
         mock_device.channels = [ch1, ch2, ch4, ch_total]
         
         def mock_fetch_ch(vue, channel, start_date, end_date, granularity, target_name=None):
@@ -259,8 +259,8 @@ class TestFetchDeviceData:
         mock_device = MagicMock()
         mock_device.device_name = "MyVue"
         
-        ch1 = MagicMock(); ch1.channel_num = '1'; ch1.name = "Mains"
-        ch_total = MagicMock(); ch_total.channel_num = '1,2,3'; ch_total.name = None
+        ch1 = MagicMock(); ch1.channel_num = '1'; ch1.name = "Mains"; ch1.parent_channel_num = None
+        ch_total = MagicMock(); ch_total.channel_num = '1,2,3'; ch_total.name = None; ch_total.parent_channel_num = None
         mock_device.channels = [ch1, ch_total]
         
         def mock_fetch_ch(vue, channel, start_date, end_date, granularity, target_name=None):
@@ -303,12 +303,12 @@ class TestFetchDeviceData:
         mock_device.device_name = "Small Cabin Hub"
         
         # Mains
-        ch1 = MagicMock(); ch1.channel_num = '1'; ch1.name = "Mains L1"
-        ch2 = MagicMock(); ch2.channel_num = '2'; ch2.name = "Mains L2"
+        ch1 = MagicMock(); ch1.channel_num = '1'; ch1.name = "Mains L1"; ch1.parent_channel_num = None
+        ch2 = MagicMock(); ch2.channel_num = '2'; ch2.name = "Mains L2"; ch2.parent_channel_num = None
         # Expansion
-        ch4 = MagicMock(); ch4.channel_num = '4'; ch4.name = "Kitchen"
+        ch4 = MagicMock(); ch4.channel_num = '4'; ch4.name = "Kitchen"; ch4.parent_channel_num = None
         # Aggregate
-        ch_total = MagicMock(); ch_total.channel_num = '1,2,3'; ch_total.name = None
+        ch_total = MagicMock(); ch_total.channel_num = '1,2,3'; ch_total.name = None; ch_total.parent_channel_num = None
         
         mock_device.channels = [ch1, ch2, ch4, ch_total]
         
@@ -333,6 +333,49 @@ class TestFetchDeviceData:
         # If buggy, it would be 10 - (5 + 5 + 2) = -2.
         assert balance_df["Small Cabin Hub: Balance (USD)"].iloc[0] == pytest.approx(8.0)
         assert balance_df["Small Cabin Hub: Balance (kWh)"].iloc[0] == pytest.approx(80.0)
+
+    def test_fetch_device_data_nested_channels(self, monkeypatch):
+        """
+        Test that nested channels (those with parent_channel_num) are NOT subtracted
+        from the total to compute balance, as their parent is already subtracted.
+        """
+        mock_vue = MagicMock()
+        mock_device = MagicMock()
+        mock_device.device_name = "GlassHaus Hub"
+        
+        # Main
+        ch_total = MagicMock(); ch_total.channel_num = '1,2,3'; ch_total.name = None
+        # Parent Merged Channel
+        ch97 = MagicMock(); ch97.channel_num = '97'; ch97.name = "Circuits 1 & 6"; ch97.parent_channel_num = None
+        # Child Channels
+        ch1 = MagicMock(); ch1.channel_num = '1'; ch1.name = "GlassHaus1"; ch1.parent_channel_num = '97'
+        ch6 = MagicMock(); ch6.channel_num = '6'; ch6.name = "GlassHaus2"; ch6.parent_channel_num = '97'
+        
+        mock_device.channels = [ch_total, ch97, ch1, ch6]
+        
+        def mock_fetch_ch(vue, channel, start_date, end_date, granularity, target_name=None):
+            # All usage is 2.0 except total which is 10.0
+            val = 10.0 if target_name == "TOTAL" else 2.0
+            return pd.DataFrame({
+                'instant': [datetime(2023,1,1)], 
+                f'{target_name or "Ch"} (USD)': [val/10.0], 
+                f'{target_name or "Ch"} (kWh)': [val]
+            })
+
+        monkeypatch.setattr(download_data, 'fetch_channel_data', mock_fetch_ch)
+        
+        dfs = download_data.fetch_device_data(mock_vue, mock_device, date(2023,1,1), date(2023,1,2), "DAY")
+        
+        # Balance should be: Total (10) - Parent (2) = 8.
+        # It should NOT be: Total (10) - Parent (2) - Child1 (2) - Child2 (2) = 4.
+        balance_df = next(df for df in dfs if "GlassHaus Hub: Balance (kWh)" in df.columns)
+        assert balance_df["GlassHaus Hub: Balance (kWh)"].iloc[0] == pytest.approx(8.0)
+        
+        # All 3 named channels (97, 1, 6) should still be in results for the CSV
+        all_cols = [c for df in dfs for c in df.columns]
+        assert "GlassHaus Hub: Circuits 1 & 6 (kWh)" in all_cols
+        assert "GlassHaus Hub: GlassHaus1 (kWh)" in all_cols
+        assert "GlassHaus Hub: GlassHaus2 (kWh)" in all_cols
 
 class TestGetEmporiaDeviceInfo:
     def test_get_emporia_device_info_populates_properties(self):
