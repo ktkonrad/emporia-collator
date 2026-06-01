@@ -18,25 +18,25 @@ def mock_config_file(tmp_path):
     return _create_config
 
 class TestGetDefaultDates:
-    def test_get_default_dates_after_26th(self, monkeypatch):
-        """Test logic when today is after the 26th (e.g., March 27)."""
+    def test_get_default_dates_standard(self, monkeypatch):
+        """Test logic returns the full previous month (e.g., March 1 to March 31 if today is April 10)."""
         mock_date = MagicMock()
-        mock_date.today.return_value = date(2026, 3, 27)
+        mock_date.today.return_value = date(2026, 4, 10)
         monkeypatch.setattr(download_data, 'date', mock_date)
         
         s_date, e_date = download_data.get_default_dates()
-        assert s_date == date(2026, 2, 27)
-        assert e_date == date(2026, 3, 26)
+        assert s_date == date(2026, 3, 1)
+        assert e_date == date(2026, 3, 31)
 
-    def test_get_default_dates_before_26th(self, monkeypatch):
-        """Test logic when today is before the 26th (e.g., March 5)."""
+    def test_get_default_dates_year_boundary(self, monkeypatch):
+        """Test logic works across year boundaries (e.g., Dec 1 to Dec 31 if today is Jan 5)."""
         mock_date = MagicMock()
-        mock_date.today.return_value = date(2026, 3, 5)
+        mock_date.today.return_value = date(2026, 1, 5)
         monkeypatch.setattr(download_data, 'date', mock_date)
         
         s_date, e_date = download_data.get_default_dates()
-        assert s_date == date(2026, 1, 27)
-        assert e_date == date(2026, 2, 26)
+        assert s_date == date(2025, 12, 1)
+        assert e_date == date(2025, 12, 31)
 
 class TestLoadConfig:
     def test_load_full_config(self, mock_config_file):
@@ -81,7 +81,7 @@ class TestDownloadEmporiaData:
         self.mock_save = MagicMock()
         monkeypatch.setattr(download_data, 'save_data', self.mock_save)
 
-        self.mock_get_default_dates = MagicMock(return_value=(date(2023, 1, 27), date(2023, 2, 26)))
+        self.mock_get_default_dates = MagicMock(return_value=(date(2023, 1, 1), date(2023, 1, 31)))
         monkeypatch.setattr(download_data, 'get_default_dates', self.mock_get_default_dates)
 
     def test_basic_download_logic(self):
@@ -329,7 +329,7 @@ def test_csv_output_header(tmp_path, monkeypatch):
         ([0.75], datetime(2023, 1, 1))
     ]
     
-    monkeypatch.setattr(download_data, 'get_default_dates', MagicMock(return_value=(date(2023, 1, 27), date(2023, 2, 26))))
+    monkeypatch.setattr(download_data, 'get_default_dates', MagicMock(return_value=(date(2023, 1, 1), date(2023, 1, 31))))
 
     output_folder = tmp_path / "emporia_data"
     download_data.download_emporia_data(
@@ -337,6 +337,6 @@ def test_csv_output_header(tmp_path, monkeypatch):
         granularity='DAY', output_folder=str(output_folder)
     )
 
-    csv_file_path = output_folder / "emporia_data_2023-02.csv"
+    csv_file_path = output_folder / "emporia_data_2023-01.csv"
     df = pd.read_csv(csv_file_path)
     assert 'Test Device: Ch1 (USD)' in df.columns

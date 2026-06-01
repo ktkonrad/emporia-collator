@@ -31,17 +31,15 @@ def setup_logging(verbosity: str):
 
 def get_default_dates() -> Tuple[date, date]:
     """
-    Returns the most recent billing cycle dates (27th to 26th).
+    Returns the first and last day of the previous calendar month.
     """
     today = date.today()
-    if today.day >= 26:
-        e_date = today.replace(day=26)
-    else:
-        # Previous month's 26th
-        e_date = (today.replace(day=1) - timedelta(days=1)).replace(day=26)
-    
-    # s_date is the 27th of the month before e_date
-    s_date = (e_date.replace(day=1) - timedelta(days=1)).replace(day=27)
+    # First day of current month
+    first_of_current = today.replace(day=1)
+    # Last day of previous month
+    e_date = first_of_current - timedelta(days=1)
+    # First day of previous month
+    s_date = e_date.replace(day=1)
     return s_date, e_date
 
 def authenticate(email: str, password: str) -> Optional[PyEmVue]:
