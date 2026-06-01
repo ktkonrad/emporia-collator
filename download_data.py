@@ -4,6 +4,7 @@ import logging
 import argparse
 import yaml
 import gspread
+import calendar
 import pandas as pd
 import urllib.parse
 from datetime import datetime, date, timedelta, timezone
@@ -40,6 +41,36 @@ def get_default_dates() -> Tuple[date, date]:
     e_date = first_of_current - timedelta(days=1)
     # First day of previous month
     s_date = e_date.replace(day=1)
+    return s_date, e_date
+
+def get_dates_for_month(month_str: str) -> Tuple[date, date]:
+    """
+    Parses a month string (YYYY-MM or MM) and returns the first and last day of that month.
+    If only MM is provided, it assumes the most recent year that month occurred (completed).
+    """
+    today = date.today()
+    try:
+        if '-' in month_str:
+            dt = datetime.strptime(month_str, '%Y-%m')
+            year = dt.year
+            month = dt.month
+        else:
+            month = int(month_str)
+            if not 1 <= month <= 12:
+                raise ValueError("Month must be between 1 and 12")
+            # If the requested month is >= current month, it hasn't completed this year yet.
+            if month >= today.month:
+                year = today.year - 1
+            else:
+                year = today.year
+    except ValueError as e:
+        if "Month must be between 1 and 12" in str(e):
+            raise
+        raise ValueError(f"Invalid month format '{month_str}'. Expected 'YYYY-MM' or 'MM'.") from e
+            
+    s_date = datetime(year, month, 1).date()
+    _, last_day = calendar.monthrange(year, month)
+    e_date = datetime(year, month, last_day).date()
     return s_date, e_date
 
 def authenticate(email: str, password: str) -> Optional[PyEmVue]:
@@ -89,6 +120,7 @@ def fetch_channel_data(vue: PyEmVue, channel: Any, start_date: date, end_date: d
     """
     Fetches usage (kWh) and cost (USD) data for a specific channel.
     Handles the conversion between the local timezone (America/Los_Angeles) and UTC required by the API.
+    If no data is returned from the API, returns a zero-filled DataFrame to ensure column consistency.
     """
     # Skip multi-channel pseudochannels (e.g., '1,2,4') which are redundant, 
     # but keep '1,2,3' as it represents the device total.
@@ -120,43 +152,55 @@ def fetch_channel_data(vue: PyEmVue, channel: Any, start_date: date, end_date: d
         usage_usd, start_time_utc = vue.get_chart_usage(channel=channel, start=start_dt_utc, end=end_dt_utc, scale=scale_value, unit=Unit.USD.value)
         usage_kwh, _ = vue.get_chart_usage(channel=channel, start=start_dt_utc, end=end_dt_utc, scale=scale_value, unit=Unit.KWH.value)
 
-        if not usage_usd or not usage_kwh:
-            return None
+        # The API returns the exact UTC start time of the first data point if available, 
+        # otherwise we fallback to the requested start time.
+        if start_time_utc:
+            if start_time_utc.tzinfo is None:
+                start_time_utc = start_time_utc.replace(tzinfo=timezone.utc)
+        else:
+            start_time_utc = start_dt_utc
             
-        if all(v is None for v in usage_usd) and all(v is None for v in usage_kwh):
-            logging.debug(f"  No data returned for {ch_display_name}")
-            return None
-
-        # The API returns the exact UTC start time of the first data point
-        if start_time_utc.tzinfo is None:
-            start_time_utc = start_time_utc.replace(tzinfo=timezone.utc)
-        
         # Localize the start time for the output DataFrame
         start_time_local = start_time_utc.astimezone(LOCAL_TZ)
+
+        # If data is missing or empty, generate a single-row zeroed DataFrame 
+        # (or more if we wanted to match the full requested period, but for 'Totals' one zero row suffices).
+        if not usage_usd or not usage_kwh or (all(v is None for v in usage_usd) and all(v is None for v in usage_kwh)):
+            logging.debug(f"  No data returned for {ch_display_name}, returning zero.")
+            return pd.DataFrame({
+                'instant': [start_time_local],
+                f'{ch_display_name} (USD)': [0.0],
+                f'{ch_display_name} (kWh)': [0.0]
+            })
 
         # Generate the timestamp series for each returned data point
         timestamps = pd.to_datetime([start_time_local] * len(usage_usd)) + pd.to_timedelta(range(len(usage_usd)), unit=pandas_freq)
         
         return pd.DataFrame({
             'instant': timestamps,
-            f'{ch_display_name} (USD)': usage_usd,
-            f'{ch_display_name} (kWh)': usage_kwh
+            f'{ch_display_name} (USD)': [v if v is not None else 0.0 for v in usage_usd],
+            f'{ch_display_name} (kWh)': [v if v is not None else 0.0 for v in usage_kwh]
         })
     except Exception as e:
         logging.error(f"  API Error for {ch_display_name}: {e}")
-    return None
+        # Return a zero-row placeholder on error to keep the column structure
+        return pd.DataFrame({
+            'instant': [start_dt_local],
+            f'{ch_display_name} (USD)': [0.0],
+            f'{ch_display_name} (kWh)': [0.0]
+        })
 
-def compute_balance(device_name: str, total_df: pd.DataFrame, monitored_dfs: List[pd.DataFrame]) -> Optional[pd.DataFrame]:
+def compute_balance(device_name: str, total_df: pd.DataFrame, monitored_dfs: List[pd.DataFrame]) -> pd.DataFrame:
     """
     Computes the 'Balance' channel.
     Balance = [Total (1,2,3)] - sum(All other named/monitored channels).
-    This represents unmonitored load on the main phases.
+    Always returns a DataFrame (even if zero) to ensure column consistency.
     """
-    if total_df is None:
-        return None
-        
     balance_name = f"{device_name}: Balance"
     
+    if total_df is None:
+         return pd.DataFrame(columns=['instant', f'{balance_name} (USD)', f'{balance_name} (kWh)'])
+        
     # Start with the total as the baseline
     combined_df = total_df[['instant']].copy()
     
@@ -181,11 +225,7 @@ def compute_balance(device_name: str, total_df: pd.DataFrame, monitored_dfs: Lis
         f'{balance_name} (kWh)': total_df['TOTAL (kWh)'] - sum_kwh
     })
     
-    # Only return the balance if it's statistically significant (non-zero)
-    if (balance_df[f'{balance_name} (USD)'].abs() > 1e-6).any() or \
-       (balance_df[f'{balance_name} (kWh)'].abs() > 1e-6).any():
-        return balance_df
-    return None
+    return balance_df
 
 def fetch_device_data(vue: PyEmVue, device: Any, s_date: date, e_date: date, granularity: str) -> List[pd.DataFrame]:
     """
@@ -198,14 +238,12 @@ def fetch_device_data(vue: PyEmVue, device: Any, s_date: date, e_date: date, gra
     total_channel = next((ch for ch in device.channels if str(ch.channel_num) == '1,2,3'), None)
     
     # 2. Filter for individual channels that have a name.
-    # We skip pseudochannels (those with commas in the channel_num) here 
-    # because they represent aggregates already covered by individual channels or the Total.
     monitored_channels = [
         ch for ch in device.channels 
         if ch.name and ',' not in str(ch.channel_num)
     ]
 
-    # 3. Fetch the absolute total (for balance calculation and verification)
+    # 3. Fetch the absolute total
     total_df = fetch_channel_data(vue, total_channel, s_date, e_date, granularity, target_name="TOTAL") if total_channel else None
     
     # 4. Fetch usage for all individual monitored channels
@@ -221,11 +259,9 @@ def fetch_device_data(vue: PyEmVue, device: Any, s_date: date, e_date: date, gra
     
     # 6. Build the final set of DataFrames for this device
     results = component_dfs
-    if balance_df is not None:
-        results.append(balance_df)
+    results.append(balance_df)
         
     if total_df is not None:
-        # Include a raw 'Total' column for verification (prefixed to avoid accidental aggregation)
         raw_total_df = total_df.copy()
         raw_total_df.columns = ['instant', f"{device.device_name}: [Total] (USD)", f"{device.device_name}: [Total] (kWh)"]
         results.append(raw_total_df)
@@ -234,7 +270,7 @@ def fetch_device_data(vue: PyEmVue, device: Any, s_date: date, e_date: date, gra
 
 def save_to_google_sheet(df: pd.DataFrame, sheet_url: str, service_account_file: str) -> bool:
     """
-    Appends the summary row to a Google Sheet.
+    Appends all rows from the DataFrame to a Google Sheet.
     Verifies that headers match exactly before appending to prevent data corruption.
     """
     if not os.path.exists(service_account_file):
@@ -272,9 +308,13 @@ def save_to_google_sheet(df: pd.DataFrame, sheet_url: str, service_account_file:
             logging.error(error_msg)
             return False
         
-        # Append the first row of the summary (usually the totals row)
-        worksheet.append_row([str(val) if not isinstance(val, (int, float)) else val for val in df.iloc[0]])
-        logging.info("Successfully updated Google Sheet.")
+        # Append all rows
+        rows_to_append = []
+        for _, row in df.iterrows():
+            rows_to_append.append([str(val) if not isinstance(val, (int, float)) else val for val in row])
+        
+        worksheet.append_rows(rows_to_append)
+        logging.info(f"Successfully appended {len(rows_to_append)} rows to Google Sheet.")
         return True
     except Exception as e:
         logging.error(f"Failed to update Google Sheet: {e}")
@@ -289,14 +329,16 @@ def save_data(df: pd.DataFrame, reference_date: date, output_folder: str, suffix
     df.to_csv(filename, index=False)
     logging.info(f"Saved: {filename}")
 
-def download_emporia_data(email: str, password: str, start_date_str: Optional[str], end_date_str: Optional[str], granularity: str, output_folder: str = DEFAULT_OUTPUT_FOLDER, google_sheet_url: Optional[str] = None, service_account_file: Optional[str] = DEFAULT_SERVICE_ACCOUNT_FILE, output_totals: bool = False) -> bool:
+def download_emporia_data(email: str, password: str, date_ranges: List[Tuple[date, date]], granularity: str, output_folder: str = DEFAULT_OUTPUT_FOLDER, google_sheet_url: Optional[str] = None, service_account_file: Optional[str] = DEFAULT_SERVICE_ACCOUNT_FILE, output_totals: bool = False) -> bool:
     """
     The main orchestration function.
     1. Authenticates
     2. Discovers Devices
-    3. Fetches Historical Data
-    4. Processes/Aggregates
-    5. Saves locally and optionally to Google Sheets.
+    3. For each date range:
+       a. Fetches Historical Data
+       b. Processes/Aggregates
+       c. Saves locally
+    4. Optionally appends all results to Google Sheets.
     """
     # 1. API Login
     vue = authenticate(email, password)
@@ -306,53 +348,47 @@ def download_emporia_data(email: str, password: str, start_date_str: Optional[st
     device_info = get_emporia_device_info(vue)
     if not device_info: return False
 
-    # 3. Determine Date Range
-    try:
-        if start_date_str and end_date_str:
-            s_date = datetime.strptime(start_date_str, '%Y-%m-%d').date()
-            e_date = datetime.strptime(end_date_str, '%Y-%m-%d').date()
-        else:
-            s_date, e_date = get_default_dates()
-    except ValueError as e:
-        logging.error(f"Invalid date format in config: {e}")
-        return False
+    all_month_totals = []
+
+    for s_date, e_date in date_ranges:
+        logging.info(f"Target Period: {s_date} to {e_date} (Granularity: {granularity})")
+
+        # 4. Fetch data for all discovered devices
+        all_dfs = []
+        for device in device_info.values():
+            device_dfs = fetch_device_data(vue, device, s_date, e_date, granularity)
+            if not device_dfs: continue
+            all_dfs.extend(device_dfs)
+
+        if not all_dfs:
+            logging.warning(f"No data was retrieved for {s_date} to {e_date}.")
+            continue
+
+        # 5. Merge all individual channel DataFrames into one large table
+        final_df = all_dfs[0]
+        for i in range(1, len(all_dfs)):
+            final_df = pd.merge(final_df, all_dfs[i], on='instant', how='outer')
         
-    logging.info(f"Target Period: {s_date} to {e_date} (Granularity: {granularity})")
+        # 6. Remove internal [Total] debug columns from final output unless requested
+        if not output_totals:
+            cols_to_keep = [c for c in final_df.columns if '[Total]' not in c]
+            final_df = final_df[cols_to_keep]
 
-    # 4. Fetch data for all discovered devices
-    all_dfs = []
+        # 7. Calculate and Save Totals for this month
+        totals = final_df[[c for c in final_df.columns if c != 'instant']].sum()
+        totals_df = pd.DataFrame([totals])
+        totals_df.insert(0, 'Period', f"{s_date} to {e_date}")
+        
+        save_data(totals_df, e_date, output_folder)
+        all_month_totals.append(totals_df)
 
-    for device in device_info.values():
-        device_dfs = fetch_device_data(vue, device, s_date, e_date, granularity)
-        if not device_dfs: continue
-            
-        all_dfs.extend(device_dfs)
-
-    if not all_dfs:
-        logging.warning("No data was retrieved for the specified period.")
+    if not all_month_totals:
         return False
 
-    # 5. Merge all individual channel DataFrames into one large table
-    # We use an 'outer' merge on 'instant' to ensure no timestamps are lost.
-    final_df = all_dfs[0]
-    for i in range(1, len(all_dfs)):
-        final_df = pd.merge(final_df, all_dfs[i], on='instant', how='outer')
-    
-    # 6. Remove internal [Total] debug columns from final output unless requested
-    if not output_totals:
-        cols_to_keep = [c for c in final_df.columns if '[Total]' not in c]
-        final_df = final_df[cols_to_keep]
-
-    # 7. Calculate and Save Totals
-    totals = final_df[[c for c in final_df.columns if c != 'instant']].sum()
-    totals_df = pd.DataFrame([totals])
-    totals_df.insert(0, 'Period', f"{s_date} to {e_date}")
-    
-    save_data(totals_df, e_date, output_folder)
-    
     # 8. Optional Google Sheets Upload
     if google_sheet_url:
-        return save_to_google_sheet(totals_df, google_sheet_url, service_account_file)
+        combined_totals_df = pd.concat(all_month_totals, ignore_index=True)
+        return save_to_google_sheet(combined_totals_df, google_sheet_url, service_account_file)
     return True
 
 def load_config(config_file: str = DEFAULT_CONFIG_FILE) -> Optional[Dict[str, Any]]:
@@ -368,14 +404,9 @@ def load_config(config_file: str = DEFAULT_CONFIG_FILE) -> Optional[Dict[str, An
         creds = config.get('credentials', {})
         data_cfg = config.get('data', {})
         
-        # Helper to ensure dates are strings for easier downstream processing
-        def fmt_date(d): return d.strftime('%Y-%m-%d') if isinstance(d, date) else d
-
         settings = {
             'email': creds.get('username'),
             'password': creds.get('password'),
-            'start_date_str': fmt_date(data_cfg.get('start_date')),
-            'end_date_str': fmt_date(data_cfg.get('end_date')),
             'granularity': data_cfg.get('granularity', 'DAY').upper(),
             'google_sheet_url': config.get('output', {}).get('google_sheet_url'),
             'service_account_file': config.get('output', {}).get('service_account_file', DEFAULT_SERVICE_ACCOUNT_FILE)
@@ -395,6 +426,7 @@ def main(args=None):
     parser = argparse.ArgumentParser(description='Download and process Emporia Energy usage data.')
     parser.add_argument('-v', '--verbose', action='store_const', dest='verbosity', const='DEBUG', help='Enable debug logging.')
     parser.add_argument('-q', '--quiet', action='store_const', dest='verbosity', const='WARNING', help='Only log warnings and errors.')
+    parser.add_argument('--month', type=str, nargs='+', help='Target month(s) in YYYY-MM or MM format. If MM, uses the most recent completed year.')
     parser.add_argument('--output_totals', action='store_true', help='Include raw [Total] columns for each device in the output.')
     parsed_args = parser.parse_args(args)
 
@@ -404,7 +436,20 @@ def main(args=None):
     if not config:
         sys.exit(1)
         
-    # Apply CLI flags
+    # Determine dates
+    date_ranges = []
+    try:
+        if parsed_args.month:
+            for m in parsed_args.month:
+                date_ranges.append(get_dates_for_month(m))
+        else:
+            date_ranges.append(get_default_dates())
+    except ValueError as e:
+        logging.error(e)
+        sys.exit(1)
+
+    # Apply settings and flags
+    config['date_ranges'] = date_ranges
     config['output_totals'] = parsed_args.output_totals
     
     if not download_emporia_data(**config):

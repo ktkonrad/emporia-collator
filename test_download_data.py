@@ -38,21 +38,61 @@ class TestGetDefaultDates:
         assert s_date == date(2025, 12, 1)
         assert e_date == date(2025, 12, 31)
 
+class TestGetDatesForMonth:
+    def test_get_dates_for_month_yyyy_mm(self):
+        """Test parsing YYYY-MM format."""
+        s_date, e_date = download_data.get_dates_for_month("2023-02")
+        assert s_date == date(2023, 2, 1)
+        assert e_date == date(2023, 2, 28)
+
+    def test_get_dates_for_month_mm_past(self, monkeypatch):
+        """Test parsing MM format for a month that has already occurred this year."""
+        mock_date = MagicMock()
+        mock_date.today.return_value = date(2026, 6, 1)
+        monkeypatch.setattr(download_data, 'date', mock_date)
+        
+        s_date, e_date = download_data.get_dates_for_month("05")
+        assert s_date == date(2026, 5, 1)
+        assert e_date == date(2026, 5, 31)
+
+    def test_get_dates_for_month_mm_future(self, monkeypatch):
+        """Test parsing MM format for a month that hasn't occurred yet (or is current month)."""
+        mock_date = MagicMock()
+        mock_date.today.return_value = date(2026, 6, 1)
+        monkeypatch.setattr(download_data, 'date', mock_date)
+        
+        # Current month
+        s_date, e_date = download_data.get_dates_for_month("06")
+        assert s_date == date(2025, 6, 1)
+        assert e_date == date(2025, 6, 30)
+        
+        # Future month
+        s_date, e_date = download_data.get_dates_for_month("07")
+        assert s_date == date(2025, 7, 1)
+        assert e_date == date(2025, 7, 31)
+
+    def test_get_dates_for_month_invalid(self):
+        """Test invalid month formats."""
+        with pytest.raises(ValueError, match="Invalid month format"):
+            download_data.get_dates_for_month("invalid")
+        with pytest.raises(ValueError, match="Month must be between 1 and 12"):
+            download_data.get_dates_for_month("13")
+
 class TestLoadConfig:
     def test_load_full_config(self, mock_config_file):
-        """Test loading a complete config file."""
+        """Test loading a complete config file (dates should be ignored now)."""
         config_content = """
         credentials:
           username: user@example.com
           password: pass
         data:
-          start_date: 2023-01-01
-          end_date: 2023-01-31
           granularity: HOURS
         """
         config_path = mock_config_file(config_content)
         settings = download_data.load_config(config_file=str(config_path))
         assert settings['email'] == 'user@example.com'
+        assert 'start_date_str' not in settings
+        assert 'end_date_str' not in settings
 
 class TestDownloadEmporiaData:
     @pytest.fixture(autouse=True)
@@ -92,13 +132,36 @@ class TestDownloadEmporiaData:
         ]
         
         download_data.download_emporia_data(
-            email='email', password='pass', start_date_str='2023-01-01', end_date_str='2023-01-31', 
+            email='email', password='pass', date_ranges=[(date(2023, 1, 1), date(2023, 1, 31))], 
             granularity='DAY'
         )
         
         saved_df = self.mock_save.call_args[0][0]
         assert 'Test Device: Ch1 (USD)' in saved_df.columns
         assert saved_df['Test Device: Ch1 (USD)'].iloc[0] == pytest.approx(0.1)
+
+    def test_multi_month_download_logic(self):
+        """Test that multiple months are processed and saved."""
+        self.mock_fetch_device_data.return_value = [
+            pd.DataFrame({'instant': [datetime(2023, 1, 1)], 'Test Device: Ch1 (USD)': [0.1], 'Test Device: Ch1 (kWh)': [0.5]})
+        ]
+        
+        download_data.download_emporia_data(
+            email='email', password='pass', 
+            date_ranges=[
+                (date(2023, 1, 1), date(2023, 1, 31)),
+                (date(2023, 2, 1), date(2023, 2, 28))
+            ], 
+            granularity='DAY'
+        )
+        
+        assert self.mock_save.call_count == 2
+        # Check first month
+        saved_df_1 = self.mock_save.call_args_list[0][0][0]
+        assert saved_df_1['Period'].iloc[0] == "2023-01-01 to 2023-01-31"
+        # Check second month
+        saved_df_2 = self.mock_save.call_args_list[1][0][0]
+        assert saved_df_2['Period'].iloc[0] == "2023-02-01 to 2023-02-28"
 
     def test_output_totals_flag(self):
         """Test that --output_totals includes the raw [Total] columns."""
@@ -109,7 +172,7 @@ class TestDownloadEmporiaData:
         
         # Test without flag (default)
         download_data.download_emporia_data(
-            email='email', password='pass', start_date_str='2023-01-01', end_date_str='2023-01-31', 
+            email='email', password='pass', date_ranges=[(date(2023, 1, 1), date(2023, 1, 31))], 
             granularity='DAY', output_totals=False
         )
         saved_df = self.mock_save.call_args[0][0]
@@ -117,7 +180,7 @@ class TestDownloadEmporiaData:
         
         # Test with flag
         download_data.download_emporia_data(
-            email='email', password='pass', start_date_str='2023-01-01', end_date_str='2023-01-31', 
+            email='email', password='pass', date_ranges=[(date(2023, 1, 1), date(2023, 1, 31))], 
             granularity='DAY', output_totals=True
         )
         saved_df = self.mock_save.call_args[0][0]
@@ -181,8 +244,8 @@ class TestFetchDeviceData:
         assert balance_df["MyVue: Balance (USD)"].iloc[0] == pytest.approx(0.4)
         assert balance_df["MyVue: Balance (kWh)"].iloc[0] == pytest.approx(4.0)
 
-    def test_fetch_device_data_no_balance_if_zero(self, monkeypatch):
-        """Test that balance channel is omitted if it is effectively zero."""
+    def test_fetch_device_data_always_includes_balance(self, monkeypatch):
+        """Test that balance channel is included even if it is effectively zero."""
         mock_vue = MagicMock()
         mock_device = MagicMock()
         mock_device.device_name = "MyVue"
@@ -210,11 +273,15 @@ class TestFetchDeviceData:
         
         dfs = download_data.fetch_device_data(mock_vue, mock_device, date(2023,1,1), date(2023,1,2), "DAY")
         
-        # Should return 2 DataFrames: Mains and [Total] (Balance is 0)
-        assert len(dfs) == 2
-        assert "MyVue: Mains (USD)" in [c for df in dfs for c in df.columns]
-        assert "MyVue: [Total] (USD)" in [c for df in dfs for c in df.columns]
-        assert not any("balance" in c.lower() for df in dfs for c in df.columns)
+        # Should return 3 DataFrames: Mains, Balance (zeroed), and [Total]
+        assert len(dfs) == 3
+        all_cols = [c for df in dfs for c in df.columns]
+        assert "MyVue: Mains (USD)" in all_cols
+        assert "MyVue: Balance (USD)" in all_cols
+        assert "MyVue: [Total] (USD)" in all_cols
+        
+        balance_df = next(df for df in dfs if "MyVue: Balance (USD)" in df.columns)
+        assert balance_df["MyVue: Balance (USD)"].iloc[0] == 0.0
 
 class TestGetEmporiaDeviceInfo:
     def test_get_emporia_device_info_populates_properties(self):
@@ -257,7 +324,7 @@ class TestSaveToGoogleSheet:
         self.mock_worksheet.get_all_values.return_value = [['col1', 'col2']]
         
         download_data.save_to_google_sheet(df, "http://sheet", "sa.json")
-        assert self.mock_worksheet.append_row.call_count == 1
+        assert self.mock_worksheet.append_rows.call_count == 1
 
 class TestFetchChannelData:
     @pytest.mark.parametrize("granularity, expected_scale", [
@@ -271,8 +338,8 @@ class TestFetchChannelData:
         mock_channel = MagicMock(); mock_channel.channel_num = '1'; mock_channel.name = "Ch1"
         
         mock_vue.get_chart_usage.side_effect = [
-            ([0.1], datetime(2023, 1, 1)),
-            ([0.5], datetime(2023, 1, 1))
+            ([0.1], datetime(2023, 1, 1, tzinfo=timezone.utc)),
+            ([0.5], datetime(2023, 1, 1, tzinfo=timezone.utc))
         ]
         
         df = download_data.fetch_channel_data(mock_vue, mock_channel, date(2023,1,1), date(2023,1,2), granularity)
@@ -325,15 +392,15 @@ def test_csv_output_header(tmp_path, monkeypatch):
     monkeypatch.setattr(download_data, 'get_emporia_device_info', MagicMock(return_value={123: mock_device}))
     
     mock_vue_instance.get_chart_usage.side_effect = [
-        ([0.15], datetime(2023, 1, 1)),
-        ([0.75], datetime(2023, 1, 1))
+        ([0.15], datetime(2023, 1, 1, tzinfo=timezone.utc)),
+        ([0.75], datetime(2023, 1, 1, tzinfo=timezone.utc))
     ]
     
     monkeypatch.setattr(download_data, 'get_default_dates', MagicMock(return_value=(date(2023, 1, 1), date(2023, 1, 31))))
 
     output_folder = tmp_path / "emporia_data"
     download_data.download_emporia_data(
-        email='test@example.com', password='pass', start_date_str=None, end_date_str=None, 
+        email='test@example.com', password='pass', date_ranges=[(date(2023, 1, 1), date(2023, 1, 31))], 
         granularity='DAY', output_folder=str(output_folder)
     )
 
