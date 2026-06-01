@@ -241,16 +241,22 @@ def fetch_device_data(vue: PyEmVue, device: Any, s_date: date, e_date: date, gra
 
     # Fetch usage for all individual monitored channels
     results = []
+    circuit_dfs = []
     for ch in monitored_channels:
         display_name = f"{device.device_name}: {ch.name}"
         df = fetch_channel_data(vue, ch, s_date, e_date, granularity, target_name=display_name)
         if df is not None:
             results.append(df)
+            # Only subtract expansion channels from the total to compute balance.
+            # Channels 1, 2, and 3 are the 'Mains' and are already included in the '1,2,3' total.
+            ch_num_str = str(ch.channel_num)
+            if ch_num_str not in ['1', '2', '3']:
+                circuit_dfs.append(df)
             
     # Fetch and compute balance if total channel exists
     total_df = fetch_channel_data(vue, total_channel, s_date, e_date, granularity, target_name="TOTAL") if total_channel else None
     if total_df is not None:
-        results.append(compute_balance(device.device_name, total_df, results))
+        results.append(compute_balance(device.device_name, total_df, circuit_dfs))
         
         # Keep a copy of the raw total for output (if requested)
         raw_total_df = total_df.copy()

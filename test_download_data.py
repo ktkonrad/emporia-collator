@@ -247,10 +247,11 @@ class TestFetchDeviceData:
         assert "MyVue: Balance (USD)" in all_cols
         assert "MyVue: [Total] (USD)" in all_cols
         
-        # Check balance calculation: 1.0 - (0.4 + 0.2) = 0.4
+        # Check balance calculation: 1.0 - (0.2) = 0.8
+        # (Main Channel 1 is not subtracted from the Total)
         balance_df = next(df for df in dfs if "MyVue: Balance (USD)" in df.columns)
-        assert balance_df["MyVue: Balance (USD)"].iloc[0] == pytest.approx(0.4)
-        assert balance_df["MyVue: Balance (kWh)"].iloc[0] == pytest.approx(4.0)
+        assert balance_df["MyVue: Balance (USD)"].iloc[0] == pytest.approx(0.8)
+        assert balance_df["MyVue: Balance (kWh)"].iloc[0] == pytest.approx(8.0)
 
     def test_fetch_device_data_always_includes_balance(self, monkeypatch):
         """Test that balance channel is included even if it is effectively zero."""
@@ -281,7 +282,7 @@ class TestFetchDeviceData:
         
         dfs = download_data.fetch_device_data(mock_vue, mock_device, date(2023,1,1), date(2023,1,2), "DAY")
         
-        # Should return 3 DataFrames: Mains, Balance (zeroed), and [Total]
+        # Should return 3 DataFrames: Mains, Balance (which equals Total since no circuits are named), and [Total]
         assert len(dfs) == 3
         all_cols = [c for df in dfs for c in df.columns]
         assert "MyVue: Mains (USD)" in all_cols
@@ -289,7 +290,49 @@ class TestFetchDeviceData:
         assert "MyVue: [Total] (USD)" in all_cols
         
         balance_df = next(df for df in dfs if "MyVue: Balance (USD)" in df.columns)
-        assert balance_df["MyVue: Balance (USD)"].iloc[0] == 0.0
+        assert balance_df["MyVue: Balance (USD)"].iloc[0] == 1.0
+
+    def test_fetch_device_data_negative_balance_fix(self, monkeypatch):
+        """
+        Reproduction of negative balance bug:
+        When mains (1, 2, 3) are named, they should NOT be subtracted from the total 
+        to compute balance, as they ARE the total.
+        """
+        mock_vue = MagicMock()
+        mock_device = MagicMock()
+        mock_device.device_name = "Small Cabin Hub"
+        
+        # Mains
+        ch1 = MagicMock(); ch1.channel_num = '1'; ch1.name = "Mains L1"
+        ch2 = MagicMock(); ch2.channel_num = '2'; ch2.name = "Mains L2"
+        # Expansion
+        ch4 = MagicMock(); ch4.channel_num = '4'; ch4.name = "Kitchen"
+        # Aggregate
+        ch_total = MagicMock(); ch_total.channel_num = '1,2,3'; ch_total.name = None
+        
+        mock_device.channels = [ch1, ch2, ch4, ch_total]
+        
+        def mock_fetch_ch(vue, channel, start_date, end_date, granularity, target_name=None):
+            if target_name == "TOTAL":
+                return pd.DataFrame({'instant': [datetime(2023,1,1)], 'TOTAL (USD)': [10.0], 'TOTAL (kWh)': [100.0]})
+            elif "Mains L1" in target_name:
+                return pd.DataFrame({'instant': [datetime(2023,1,1)], 'Small Cabin Hub: Mains L1 (USD)': [5.0], 'Small Cabin Hub: Mains L1 (kWh)': [50.0]})
+            elif "Mains L2" in target_name:
+                return pd.DataFrame({'instant': [datetime(2023,1,1)], 'Small Cabin Hub: Mains L2 (USD)': [5.0], 'Small Cabin Hub: Mains L2 (kWh)': [50.0]})
+            elif "Kitchen" in target_name:
+                return pd.DataFrame({'instant': [datetime(2023,1,1)], 'Small Cabin Hub: Kitchen (USD)': [2.0], 'Small Cabin Hub: Kitchen (kWh)': [20.0]})
+            return None
+
+        monkeypatch.setattr(download_data, 'fetch_channel_data', mock_fetch_ch)
+        
+        dfs = download_data.fetch_device_data(mock_vue, mock_device, date(2023,1,1), date(2023,1,2), "DAY")
+        
+        balance_df = next(df for df in dfs if "Small Cabin Hub: Balance (USD)" in df.columns)
+        
+        # Total (10) - Kitchen (2) should be 8.
+        # If buggy, it would be 10 - (5 + 5 + 2) = -2.
+        assert balance_df["Small Cabin Hub: Balance (USD)"].iloc[0] == pytest.approx(8.0)
+        assert balance_df["Small Cabin Hub: Balance (kWh)"].iloc[0] == pytest.approx(80.0)
 
 class TestGetEmporiaDeviceInfo:
     def test_get_emporia_device_info_populates_properties(self):

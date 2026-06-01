@@ -20,10 +20,10 @@ This project provides a Python script (`download_data.py`) to connect to the Emp
 -   **Total (1,2,3) Pseudochannel**: A virtual channel in the API that returns the aggregate usage of the main phases.
 
 ### Balance Calculation
-The **Balance** represents usage on the main phases that isn't accounted for by ANY individual sensor. It is calculated as:
-`Balance = Total (1,2,3) - Sum(All Named Monitored Channels)`
+The **Balance** represents usage on the main phases that isn't accounted for by any monitored expansion circuit. It is calculated as:
+`Balance = Total (1,2,3) - Sum(All Named Monitored Channels EXCEPT 1, 2, and 3)`
 
-This ensures that the total usage reported always matches the actual energy consumed, even if not all circuits are monitored.
+This ensures that the total usage reported always matches the actual energy consumed, even if not all circuits are monitored, and prevents double-counting the main phases.
 
 ### Timezone Handling
 All timestamps and date ranges are treated as **America/Los_Angeles** local time. The script automatically handles the conversion to UTC for Emporia API requests and localizes the returned data for the final output.
