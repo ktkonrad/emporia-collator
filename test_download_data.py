@@ -20,9 +20,11 @@ def mock_config_file(tmp_path):
 class TestGetDefaultDates:
     def test_get_default_dates_standard(self, monkeypatch):
         """Test logic returns the full previous month (e.g., March 1 to March 31 if today is April 10)."""
-        mock_date = MagicMock()
-        mock_date.today.return_value = date(2026, 4, 10)
-        monkeypatch.setattr(download_data, 'date', mock_date)
+        class MockDate(date):
+            @classmethod
+            def today(cls):
+                return date(2026, 4, 10)
+        monkeypatch.setattr(download_data, 'date', MockDate)
         
         s_date, e_date = download_data.get_default_dates()
         assert s_date == date(2026, 3, 1)
@@ -30,9 +32,11 @@ class TestGetDefaultDates:
 
     def test_get_default_dates_year_boundary(self, monkeypatch):
         """Test logic works across year boundaries (e.g., Dec 1 to Dec 31 if today is Jan 5)."""
-        mock_date = MagicMock()
-        mock_date.today.return_value = date(2026, 1, 5)
-        monkeypatch.setattr(download_data, 'date', mock_date)
+        class MockDate(date):
+            @classmethod
+            def today(cls):
+                return date(2026, 1, 5)
+        monkeypatch.setattr(download_data, 'date', MockDate)
         
         s_date, e_date = download_data.get_default_dates()
         assert s_date == date(2025, 12, 1)
@@ -47,9 +51,11 @@ class TestGetDatesForMonth:
 
     def test_get_dates_for_month_mm_past(self, monkeypatch):
         """Test parsing MM format for a month that has already occurred this year."""
-        mock_date = MagicMock()
-        mock_date.today.return_value = date(2026, 6, 1)
-        monkeypatch.setattr(download_data, 'date', mock_date)
+        class MockDate(date):
+            @classmethod
+            def today(cls):
+                return date(2026, 6, 1)
+        monkeypatch.setattr(download_data, 'date', MockDate)
         
         s_date, e_date = download_data.get_dates_for_month("05")
         assert s_date == date(2026, 5, 1)
@@ -57,9 +63,11 @@ class TestGetDatesForMonth:
 
     def test_get_dates_for_month_mm_future(self, monkeypatch):
         """Test parsing MM format for a month that hasn't occurred yet (or is current month)."""
-        mock_date = MagicMock()
-        mock_date.today.return_value = date(2026, 6, 1)
-        monkeypatch.setattr(download_data, 'date', mock_date)
+        class MockDate(date):
+            @classmethod
+            def today(cls):
+                return date(2026, 6, 1)
+        monkeypatch.setattr(download_data, 'date', MockDate)
         
         # Current month
         s_date, e_date = download_data.get_dates_for_month("06")

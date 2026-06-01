@@ -52,25 +52,21 @@ def get_dates_for_month(month_str: str) -> Tuple[date, date]:
     try:
         if '-' in month_str:
             dt = datetime.strptime(month_str, '%Y-%m')
-            year = dt.year
-            month = dt.month
+            year, month = dt.year, dt.month
         else:
             month = int(month_str)
             if not 1 <= month <= 12:
                 raise ValueError("Month must be between 1 and 12")
-            # If the requested month is >= current month, it hasn't completed this year yet.
-            if month >= today.month:
-                year = today.year - 1
-            else:
-                year = today.year
+            # If the requested month is >= current month, it haven't completed this year yet.
+            year = today.year - 1 if month >= today.month else today.year
     except ValueError as e:
         if "Month must be between 1 and 12" in str(e):
             raise
         raise ValueError(f"Invalid month format '{month_str}'. Expected 'YYYY-MM' or 'MM'.") from e
             
-    s_date = datetime(year, month, 1).date()
+    s_date = date(year, month, 1)
     _, last_day = calendar.monthrange(year, month)
-    e_date = datetime(year, month, last_day).date()
+    e_date = date(year, month, last_day)
     return s_date, e_date
 
 def authenticate(email: str, password: str) -> Optional[PyEmVue]:
@@ -234,34 +230,29 @@ def fetch_device_data(vue: PyEmVue, device: Any, s_date: date, e_date: date, gra
     """
     logging.info(f"Processing Device: {device.device_name}")
     
-    # 1. Identify the 'Total' pseudochannel (1,2,3)
+    # Identify the 'Total' pseudochannel (1,2,3)
     total_channel = next((ch for ch in device.channels if str(ch.channel_num) == '1,2,3'), None)
     
-    # 2. Filter for individual channels that have a name.
+    # Filter for individual channels that have a name and are not pseudochannels.
     monitored_channels = [
         ch for ch in device.channels 
         if ch.name and ',' not in str(ch.channel_num)
     ]
 
-    # 3. Fetch the absolute total
-    total_df = fetch_channel_data(vue, total_channel, s_date, e_date, granularity, target_name="TOTAL") if total_channel else None
-    
-    # 4. Fetch usage for all individual monitored channels
-    component_dfs = []
+    # Fetch usage for all individual monitored channels
+    results = []
     for ch in monitored_channels:
         display_name = f"{device.device_name}: {ch.name}"
         df = fetch_channel_data(vue, ch, s_date, e_date, granularity, target_name=display_name)
         if df is not None:
-            component_dfs.append(df)
+            results.append(df)
             
-    # 5. Calculate the 'Balance' (Total - sum(monitored components))
-    balance_df = compute_balance(device.device_name, total_df, component_dfs)
-    
-    # 6. Build the final set of DataFrames for this device
-    results = component_dfs
-    results.append(balance_df)
-        
+    # Fetch and compute balance if total channel exists
+    total_df = fetch_channel_data(vue, total_channel, s_date, e_date, granularity, target_name="TOTAL") if total_channel else None
     if total_df is not None:
+        results.append(compute_balance(device.device_name, total_df, results))
+        
+        # Keep a copy of the raw total for output (if requested)
         raw_total_df = total_df.copy()
         raw_total_df.columns = ['instant', f"{device.device_name}: [Total] (USD)", f"{device.device_name}: [Total] (kWh)"]
         results.append(raw_total_df)
