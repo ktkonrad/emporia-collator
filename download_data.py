@@ -27,7 +27,12 @@ GRANULARITY_MAP = {
 
 def setup_logging(verbosity: str):
     """Configures the logging module."""
-    level = getattr(logging, verbosity.upper(), logging.INFO)
+    if verbosity.upper() == 'DEBUG':
+        level = logging.DEBUG
+    elif verbosity.upper() == 'WARNING':
+        level = logging.WARNING
+    else:
+        level = logging.INFO
     logging.basicConfig(level=level, format='%(levelname)s: %(message)s')
 
 def get_default_dates() -> Tuple[date, date]:
@@ -257,8 +262,8 @@ def fetch_device_data(vue: PyEmVue, device: Any, s_date: date, e_date: date, gra
             results.append(df)
             
             # Identify if this channel has a parent (making it a nested/child circuit)
-            is_main_type = getattr(ch, 'type', None) == 'Main'
-            has_parent = getattr(ch, 'parent_channel_num', None) is not None
+            is_main_type = ch.type == 'Main'
+            has_parent = ch.parent_channel_num is not None
             
             if has_parent:
                 nested_cols.extend([c for c in df.columns if c != 'instant'])
