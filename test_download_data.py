@@ -119,11 +119,11 @@ class TestDownloadEmporiaData:
         self.mock_get_device_info = MagicMock(return_value=self.mock_device_info)
         monkeypatch.setattr(download_data, 'get_emporia_device_info', self.mock_get_device_info)
 
-        self.mock_fetch_device_data = MagicMock(return_value=[pd.DataFrame({
+        self.mock_fetch_device_data = MagicMock(return_value=([pd.DataFrame({
             'instant': [datetime(2023, 1, 1)], 
             'Test Device: Channel 1 (USD)': [0.1],
             'Test Device: Channel 1 (kWh)': [0.5]
-        })])
+        })], []))
         monkeypatch.setattr(download_data, 'fetch_device_data', self.mock_fetch_device_data)
 
         self.mock_save = MagicMock()
@@ -135,9 +135,10 @@ class TestDownloadEmporiaData:
     def test_basic_download_logic(self):
         """Test that data is fetched and saved correctly."""
         # Device 1 has one channel
-        self.mock_fetch_device_data.return_value = [
-            pd.DataFrame({'instant': [datetime(2023, 1, 1)], 'Test Device: Ch1 (USD)': [0.1], 'Test Device: Ch1 (kWh)': [0.5]})
-        ]
+        self.mock_fetch_device_data.return_value = (
+            [pd.DataFrame({'instant': [datetime(2023, 1, 1)], 'Test Device: Ch1 (USD)': [0.1], 'Test Device: Ch1 (kWh)': [0.5]})],
+            []
+        )
         
         download_data.download_emporia_data(
             email='email', password='pass', date_ranges=[(date(2023, 1, 1), date(2023, 1, 31))], 
@@ -150,9 +151,10 @@ class TestDownloadEmporiaData:
 
     def test_multi_month_download_logic(self):
         """Test that multiple months are processed and saved."""
-        self.mock_fetch_device_data.return_value = [
-            pd.DataFrame({'instant': [datetime(2023, 1, 1)], 'Test Device: Ch1 (USD)': [0.1], 'Test Device: Ch1 (kWh)': [0.5]})
-        ]
+        self.mock_fetch_device_data.return_value = (
+            [pd.DataFrame({'instant': [datetime(2023, 1, 1)], 'Test Device: Ch1 (USD)': [0.1], 'Test Device: Ch1 (kWh)': [0.5]})],
+            []
+        )
         
         download_data.download_emporia_data(
             email='email', password='pass', 
@@ -173,10 +175,13 @@ class TestDownloadEmporiaData:
 
     def test_output_totals_flag(self):
         """Test that --output_totals includes the raw [Total] columns."""
-        self.mock_fetch_device_data.return_value = [
-            pd.DataFrame({'instant': [datetime(2023, 1, 1)], 'Test Device: Ch1 (USD)': [0.1], 'Test Device: Ch1 (kWh)': [0.5]}),
-            pd.DataFrame({'instant': [datetime(2023, 1, 1)], 'Test Device: [Total] (USD)': [0.1], 'Test Device: [Total] (kWh)': [0.5]})
-        ]
+        self.mock_fetch_device_data.return_value = (
+            [
+                pd.DataFrame({'instant': [datetime(2023, 1, 1)], 'Test Device: Ch1 (USD)': [0.1], 'Test Device: Ch1 (kWh)': [0.5]}),
+                pd.DataFrame({'instant': [datetime(2023, 1, 1)], 'Test Device: [Total] (USD)': [0.1], 'Test Device: [Total] (kWh)': [0.5]})
+            ],
+            []
+        )
         
         # Test without flag (default)
         download_data.download_emporia_data(
@@ -193,6 +198,34 @@ class TestDownloadEmporiaData:
         )
         saved_df = self.mock_save.call_args[0][0]
         assert 'Test Device: [Total] (USD)' in saved_df.columns
+
+    def test_include_nested_flag(self):
+        """Test that --include_nested includes or excludes child channels."""
+        self.mock_fetch_device_data.return_value = (
+            [
+                pd.DataFrame({'instant': [datetime(2023, 1, 1)], 'Parent (kWh)': [1.0]}),
+                pd.DataFrame({'instant': [datetime(2023, 1, 1)], 'Child (kWh)': [0.5]})
+            ],
+            ['Child (kWh)']
+        )
+        
+        # Test without flag (default: Child should be hidden)
+        download_data.download_emporia_data(
+            email='email', password='pass', date_ranges=[(date(2023, 1, 1), date(2023, 1, 31))], 
+            granularity='DAY', include_nested=False
+        )
+        saved_df = self.mock_save.call_args[0][0]
+        assert 'Parent (kWh)' in saved_df.columns
+        assert 'Child (kWh)' not in saved_df.columns
+        
+        # Test with flag (Child should be shown)
+        download_data.download_emporia_data(
+            email='email', password='pass', date_ranges=[(date(2023, 1, 1), date(2023, 1, 31))], 
+            granularity='DAY', include_nested=True
+        )
+        saved_df = self.mock_save.call_args[0][0]
+        assert 'Parent (kWh)' in saved_df.columns
+        assert 'Child (kWh)' in saved_df.columns
 
 class TestFetchDeviceData:
     def test_fetch_device_data_naming_and_balance(self, monkeypatch):
@@ -231,11 +264,12 @@ class TestFetchDeviceData:
 
         monkeypatch.setattr(download_data, 'fetch_channel_data', mock_fetch_ch)
         
-        dfs = download_data.fetch_device_data(mock_vue, mock_device, date(2023,1,1), date(2023,1,2), "DAY")
+        dfs, nested_cols = download_data.fetch_device_data(mock_vue, mock_device, date(2023,1,1), date(2023,1,2), "DAY")
         
         # Should return 4 DataFrames: Mains, Kitchen, Balance, and [Total]
         # (Unnamed Channel 2 is skipped)
         assert len(dfs) == 4
+        assert not nested_cols
         
         # Check names
         all_cols = []
@@ -248,7 +282,7 @@ class TestFetchDeviceData:
         assert "MyVue: [Total] (USD)" in all_cols
         
         # Check balance calculation: 1.0 - (0.2) = 0.8
-        # (Main Channel 1 is not subtracted from the Total)
+        # (Main Channel 1 is not subtracted from the Total because it has type 'Main')
         balance_df = next(df for df in dfs if "MyVue: Balance (USD)" in df.columns)
         assert balance_df["MyVue: Balance (USD)"].iloc[0] == pytest.approx(0.8)
         assert balance_df["MyVue: Balance (kWh)"].iloc[0] == pytest.approx(8.0)
@@ -280,7 +314,7 @@ class TestFetchDeviceData:
 
         monkeypatch.setattr(download_data, 'fetch_channel_data', mock_fetch_ch)
         
-        dfs = download_data.fetch_device_data(mock_vue, mock_device, date(2023,1,1), date(2023,1,2), "DAY")
+        dfs, nested_cols = download_data.fetch_device_data(mock_vue, mock_device, date(2023,1,1), date(2023,1,2), "DAY")
         
         # Should return 3 DataFrames: Mains, Balance (which equals Total since no circuits are named), and [Total]
         assert len(dfs) == 3
@@ -325,7 +359,7 @@ class TestFetchDeviceData:
 
         monkeypatch.setattr(download_data, 'fetch_channel_data', mock_fetch_ch)
         
-        dfs = download_data.fetch_device_data(mock_vue, mock_device, date(2023,1,1), date(2023,1,2), "DAY")
+        dfs, nested_cols = download_data.fetch_device_data(mock_vue, mock_device, date(2023,1,1), date(2023,1,2), "DAY")
         
         balance_df = next(df for df in dfs if "Small Cabin Hub: Balance (USD)" in df.columns)
         
@@ -344,12 +378,12 @@ class TestFetchDeviceData:
         mock_device.device_name = "GlassHaus Hub"
         
         # Main
-        ch_total = MagicMock(); ch_total.channel_num = '1,2,3'; ch_total.name = None
+        ch_total = MagicMock(); ch_total.channel_num = '1,2,3'; ch_total.name = None; ch_total.parent_channel_num = None; ch_total.type = 'Main'
         # Parent Merged Channel
-        ch97 = MagicMock(); ch97.channel_num = '97'; ch97.name = "Circuits 1 & 6"; ch97.parent_channel_num = None
+        ch97 = MagicMock(); ch97.channel_num = '97'; ch97.name = "Circuits 1 & 6"; ch97.parent_channel_num = None; ch97.type = 'Merged'
         # Child Channels
-        ch1 = MagicMock(); ch1.channel_num = '1'; ch1.name = "GlassHaus1"; ch1.parent_channel_num = '97'
-        ch6 = MagicMock(); ch6.channel_num = '6'; ch6.name = "GlassHaus2"; ch6.parent_channel_num = '97'
+        ch1 = MagicMock(); ch1.channel_num = '1'; ch1.name = "GlassHaus1"; ch1.parent_channel_num = '97'; ch1.type = 'FiftyAmp'
+        ch6 = MagicMock(); ch6.channel_num = '6'; ch6.name = "GlassHaus2"; ch6.parent_channel_num = '97'; ch6.type = 'FiftyAmp'
         
         mock_device.channels = [ch_total, ch97, ch1, ch6]
         
@@ -364,12 +398,17 @@ class TestFetchDeviceData:
 
         monkeypatch.setattr(download_data, 'fetch_channel_data', mock_fetch_ch)
         
-        dfs = download_data.fetch_device_data(mock_vue, mock_device, date(2023,1,1), date(2023,1,2), "DAY")
+        dfs, nested_cols = download_data.fetch_device_data(mock_vue, mock_device, date(2023,1,1), date(2023,1,2), "DAY")
         
         # Balance should be: Total (10) - Parent (2) = 8.
         # It should NOT be: Total (10) - Parent (2) - Child1 (2) - Child2 (2) = 4.
         balance_df = next(df for df in dfs if "GlassHaus Hub: Balance (kWh)" in df.columns)
         assert balance_df["GlassHaus Hub: Balance (kWh)"].iloc[0] == pytest.approx(8.0)
+        
+        # Channels 1 and 6 should be identified as nested
+        assert "GlassHaus Hub: GlassHaus1 (kWh)" in nested_cols
+        assert "GlassHaus Hub: GlassHaus2 (kWh)" in nested_cols
+        assert "GlassHaus Hub: Circuits 1 & 6 (kWh)" not in nested_cols
         
         # All 3 named channels (97, 1, 6) should still be in results for the CSV
         all_cols = [c for df in dfs for c in df.columns]
@@ -404,7 +443,7 @@ class TestFetchDeviceData:
 
         monkeypatch.setattr(download_data, 'fetch_channel_data', mock_fetch_ch)
         
-        dfs = download_data.fetch_device_data(mock_vue, mock_device, date(2023,1,1), date(2023,1,2), "DAY")
+        dfs, nested_cols = download_data.fetch_device_data(mock_vue, mock_device, date(2023,1,1), date(2023,1,2), "DAY")
         
         # Balance should be: Total (10) - Expansion1 (2) - Expansion2 (2) = 6.0
         balance_df = next(df for df in dfs if "Amador Yurt: Balance (kWh)" in df.columns)
@@ -513,7 +552,7 @@ def test_csv_output_header(tmp_path, monkeypatch):
     mock_device = MagicMock()
     mock_device.device_gid = 123
     mock_device.device_name = "Test Device"
-    ch1 = MagicMock(); ch1.channel_num = '1'; ch1.name = "Ch1"
+    ch1 = MagicMock(); ch1.channel_num = '1'; ch1.name = "Ch1"; ch1.parent_channel_num = None; ch1.type = 'FiftyAmp'
     mock_device.channels = [ch1]
     
     monkeypatch.setattr(download_data, 'get_emporia_device_info', MagicMock(return_value={123: mock_device}))

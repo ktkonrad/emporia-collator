@@ -229,10 +229,11 @@ def compute_balance(device_name: str, total_df: pd.DataFrame, monitored_dfs: Lis
     
     return balance_df
 
-def fetch_device_data(vue: PyEmVue, device: Any, s_date: date, e_date: date, granularity: str) -> List[pd.DataFrame]:
+def fetch_device_data(vue: PyEmVue, device: Any, s_date: date, e_date: date, granularity: str) -> Tuple[List[pd.DataFrame], List[str]]:
     """
     Orchestrates the fetching of all data for a single device.
     Includes named channels, calculated balance, and raw total.
+    Returns (List of DataFrames, List of nested column names to potentially hide).
     """
     logging.info(f"Processing Device: {device.device_name}")
     
@@ -248,18 +249,23 @@ def fetch_device_data(vue: PyEmVue, device: Any, s_date: date, e_date: date, gra
     # Fetch usage for all individual monitored channels
     results = []
     circuit_dfs = []
+    nested_cols = []
     for ch in monitored_channels:
         display_name = f"{device.device_name}: {ch.name}"
         df = fetch_channel_data(vue, ch, s_date, e_date, granularity, target_name=display_name)
         if df is not None:
             results.append(df)
-            # Only subtract expansion channels from the total to compute balance.
-            # Channels with type 'Main' are the sources (200A clamps) and should not be 
-            # subtracted from the aggregate total to find the unmonitored balance.
-            # Additionally, only subtract channels that do NOT have a parent_channel_num.
+            
+            # Identify if this channel has a parent (making it a nested/child circuit)
             is_main_type = getattr(ch, 'type', None) == 'Main'
             has_parent = getattr(ch, 'parent_channel_num', None) is not None
             
+            if has_parent:
+                nested_cols.extend([c for c in df.columns if c != 'instant'])
+            
+            # Only subtract expansion channels from the total to compute balance.
+            # Channels with type 'Main' are the sources and should not be subtracted.
+            # Additionally, only subtract channels that do NOT have a parent.
             if not is_main_type and not has_parent:
                 circuit_dfs.append(df)
             
@@ -273,7 +279,7 @@ def fetch_device_data(vue: PyEmVue, device: Any, s_date: date, e_date: date, gra
         raw_total_df.columns = ['instant', f"{device.device_name}: [Total] (USD)", f"{device.device_name}: [Total] (kWh)"]
         results.append(raw_total_df)
             
-    return results
+    return results, nested_cols
 
 def save_to_google_sheet(df: pd.DataFrame, sheet_url: str, service_account_file: str) -> bool:
     """
@@ -336,7 +342,7 @@ def save_data(df: pd.DataFrame, reference_date: date, output_folder: str, suffix
     df.to_csv(filename, index=False)
     logging.info(f"Saved: {filename}")
 
-def download_emporia_data(email: str, password: str, date_ranges: List[Tuple[date, date]], granularity: str, output_folder: str = DEFAULT_OUTPUT_FOLDER, google_sheet_url: Optional[str] = None, service_account_file: Optional[str] = DEFAULT_SERVICE_ACCOUNT_FILE, output_totals: bool = False) -> bool:
+def download_emporia_data(email: str, password: str, date_ranges: List[Tuple[date, date]], granularity: str, output_folder: str = DEFAULT_OUTPUT_FOLDER, google_sheet_url: Optional[str] = None, service_account_file: Optional[str] = DEFAULT_SERVICE_ACCOUNT_FILE, output_totals: bool = False, include_nested: bool = False) -> bool:
     """
     The main orchestration function.
     1. Authenticates
@@ -362,10 +368,12 @@ def download_emporia_data(email: str, password: str, date_ranges: List[Tuple[dat
 
         # 4. Fetch data for all discovered devices
         all_dfs = []
+        all_nested_cols = []
         for device in device_info.values():
-            device_dfs = fetch_device_data(vue, device, s_date, e_date, granularity)
+            device_dfs, nested_cols = fetch_device_data(vue, device, s_date, e_date, granularity)
             if not device_dfs: continue
             all_dfs.extend(device_dfs)
+            all_nested_cols.extend(nested_cols)
 
         if not all_dfs:
             logging.warning(f"No data was retrieved for {s_date} to {e_date}.")
@@ -376,10 +384,18 @@ def download_emporia_data(email: str, password: str, date_ranges: List[Tuple[dat
         for i in range(1, len(all_dfs)):
             final_df = pd.merge(final_df, all_dfs[i], on='instant', how='outer')
         
-        # 6. Remove internal [Total] debug columns from final output unless requested
+        # 6. Apply filtering logic
+        cols_to_keep = final_df.columns.tolist()
+        
+        # Hide raw totals unless requested
         if not output_totals:
-            cols_to_keep = [c for c in final_df.columns if '[Total]' not in c]
-            final_df = final_df[cols_to_keep]
+            cols_to_keep = [c for c in cols_to_keep if '[Total]' not in c]
+            
+        # Hide nested channels unless requested
+        if not include_nested:
+            cols_to_keep = [c for c in cols_to_keep if c not in all_nested_cols]
+            
+        final_df = final_df[cols_to_keep]
 
         # 7. Calculate and Save Totals for this month
         totals = final_df[[c for c in final_df.columns if c != 'instant']].sum()
@@ -435,6 +451,7 @@ def main(args=None):
     parser.add_argument('-q', '--quiet', action='store_const', dest='verbosity', const='WARNING', help='Only log warnings and errors.')
     parser.add_argument('--month', type=str, nargs='+', help='Target month(s) in YYYY-MM or MM format. If MM, uses the most recent completed year.')
     parser.add_argument('--output_totals', action='store_true', help='Include raw [Total] columns for each device in the output.')
+    parser.add_argument('--include_nested', action='store_true', help='Include nested/child channels in the output (they are hidden by default).')
     parsed_args = parser.parse_args(args)
 
     setup_logging(parsed_args.verbosity or 'INFO')
@@ -458,6 +475,7 @@ def main(args=None):
     # Apply settings and flags
     config['date_ranges'] = date_ranges
     config['output_totals'] = parsed_args.output_totals
+    config['include_nested'] = parsed_args.include_nested
     
     if not download_emporia_data(**config):
         sys.exit(1)
