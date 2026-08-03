@@ -101,11 +101,11 @@ def get_emporia_device_info(vue: PyEmVue) -> Optional[Dict[int, Any]]:
             vue.populate_device_properties(device)
             gid = device.device_gid
             
-            logging.info(f"Device Discovery: {device.device_name} (GID: {gid}, Model: {device.model})")
+            logging.debug(f"Device Discovery: {device.device_name} (GID: {gid}, Model: {device.model})")
             for ch in device.channels:
                 # Log all attributes of the channel for debugging balance logic
                 attrs = {k: v for k, v in vars(ch).items() if not k.startswith('_')}
-                logging.info(f"  Channel {ch.channel_num}: {ch.name} -> {attrs}")
+                logging.debug(f"  Channel {ch.channel_num}: {ch.name} -> {attrs}")
             
             if gid not in device_info:
                 device_info[gid] = device
